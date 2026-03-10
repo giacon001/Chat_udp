@@ -1229,7 +1229,14 @@ class TelaSetup(tk.Tk):
         tk.Label(
             container, text="▸ MEU COMPUTADOR",
             font=FONT_BOLD, fg=C["accent3"], bg=C["bg_deep"]
-        ).pack(anchor="w", pady=(8, 6))
+        ).pack(anchor="w", pady=(8, 2))
+        tk.Label(
+            container,
+            text="Configure os dados deste computador. O outro PC também "
+                 "precisa rodar o programa com as configurações dele.",
+            font=FONT_NANO, fg=C["text_sec"], bg=C["bg_deep"],
+            wraplength=560, justify="left"
+        ).pack(anchor="w", pady=(0, 6))
 
         me_frame = tk.Frame(container, bg=C["bg_panel"],
                             highlightbackground=C["border"], highlightthickness=1)
@@ -1261,6 +1268,11 @@ class TelaSetup(tk.Tk):
                               highlightcolor=C["accent"])
         self._e_ip.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
         self._e_ip.insert(0, "127.0.0.1")
+        tk.Label(
+            row_me,
+            text="Dica: descubra seu IP com  ipconfig  (Windows) ou  ifconfig / ip a  (Linux/Mac)",
+            font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
+        ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=3)
 
         # Porta
         tk.Label(row_me, text="Porta:", font=FONT_MONO,
@@ -1273,6 +1285,11 @@ class TelaSetup(tk.Tk):
                                  highlightcolor=C["accent"])
         self._e_porta.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
         self._e_porta.insert(0, "5001")
+        tk.Label(
+            row_me,
+            text="Recomendado: use portas entre 5001-5009 (uma diferente por PC)",
+            font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
+        ).grid(row=2, column=2, sticky="w", padx=(10, 0), pady=3)
 
         # ── Seção: Vizinhos ───────────────────────────────────────────────
         viz_header = tk.Frame(container, bg=C["bg_deep"])
@@ -1281,6 +1298,13 @@ class TelaSetup(tk.Tk):
             viz_header, text="▸ VIZINHOS",
             font=FONT_BOLD, fg=C["accent"], bg=C["bg_deep"]
         ).pack(side="left")
+
+        tk.Label(
+            container,
+            text="Informe o nome, IP e porta de cada PC com quem deseja conversar.",
+            font=FONT_NANO, fg=C["text_sec"], bg=C["bg_deep"],
+            wraplength=560, justify="left"
+        ).pack(anchor="w", pady=(0, 4))
 
         btn_add = tk.Label(
             viz_header, text="  [+ ADICIONAR]  ",
