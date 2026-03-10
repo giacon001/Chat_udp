@@ -27,6 +27,7 @@ import threading        # Thread de escuta concorrente + Lock thread-safe
 import json             # Serialização/desserialização dos pacotes
 import sys              # sys.argv (argumentos da linha de comando)
 import time             # timestamps e delays
+import uuid             # IDs únicos para rastreamento de status
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict
 from collections import deque
@@ -103,6 +104,8 @@ class Mensagem:
     conteudo: str
     encaminhado: bool = False
     encaminhado_por: Optional[str] = None
+    tipo_pacote: str = "msg"        # "msg", "ack_recebido", "ack_lido"
+    msg_id: Optional[str] = None    # ID único para rastreamento de status
 
     def serializar(self) -> bytes:
         """
@@ -174,7 +177,10 @@ class No:
         # AF_INET = IPv4 | SOCK_DGRAM = UDP (sem conexão, sem garantia de entrega)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind((self.ip, self.porta))   # registra nesta porta
+        self._sock.bind(('0.0.0.0', self.porta))   # escuta em TODAS as interfaces
+
+        # ── Status de mensagens enviadas (msg_id → "enviado"/"recebido"/"lido")
+        self._status_msgs: Dict[str, str] = {}
 
         # ── Histórico por vizinho ─────────────────────────────────────────────
         # deque(maxlen=300): fila circular — evita crescimento ilimitado
@@ -211,6 +217,7 @@ class No:
           Fire-and-forget: envia e retorna imediatamente.
           Sem handshake, sem confirmação (natureza do UDP).
         """
+        mid = str(uuid.uuid4())[:8]
         msg = Mensagem(
             timestamp       = datetime.now().isoformat(timespec='seconds'),
             remetente_nome  = self.nome,
@@ -220,9 +227,11 @@ class No:
             dest_ip         = vizinho.ip,
             dest_porta      = vizinho.porta,
             conteudo        = texto,
+            msg_id          = mid,
         )
         self._sock.sendto(msg.serializar(), vizinho.endereco)
         with self._lock:
+            self._status_msgs[mid] = "enviado"
             self._historico[vizinho.nome].append(
                 {"tipo": "eu", "msg": msg}
             )
@@ -285,7 +294,10 @@ class No:
             try:
                 dados, _ = self._sock.recvfrom(65535)
                 msg = Mensagem.desserializar(dados)
-                self._processar(msg)
+                if msg.tipo_pacote in ("ack_recebido", "ack_lido"):
+                    self._processar_ack(msg)
+                else:
+                    self._processar(msg)
             except OSError:
                 break
             except Exception:
@@ -315,8 +327,63 @@ class No:
             self._historico[chave].append({"tipo": tipo, "msg": msg})
             self._brutas[chave].append(deepcopy(msg))
 
+        # Envia ACK de recebimento de volta ao remetente
+        if msg.msg_id and not msg.encaminhado:
+            self._enviar_ack(msg, "ack_recebido")
+
         if self._callback_nova_msg:
             self._callback_nova_msg(chave)
+
+    def _enviar_ack(self, msg_original: Mensagem, tipo_ack: str):
+        """Envia confirmação (recebido/lido) de volta ao remetente."""
+        ack = Mensagem(
+            timestamp       = datetime.now().isoformat(timespec='seconds'),
+            remetente_nome  = self.nome,
+            remetente_ip    = self.ip,
+            remetente_porta = self.porta,
+            dest_nome       = msg_original.remetente_nome,
+            dest_ip         = msg_original.remetente_ip,
+            dest_porta      = msg_original.remetente_porta,
+            conteudo        = "",
+            tipo_pacote     = tipo_ack,
+            msg_id          = msg_original.msg_id,
+        )
+        try:
+            self._sock.sendto(
+                ack.serializar(),
+                (msg_original.remetente_ip, msg_original.remetente_porta)
+            )
+        except OSError:
+            pass
+
+    def _processar_ack(self, msg: Mensagem):
+        """Atualiza status de uma mensagem enviada com base no ACK recebido."""
+        mid = msg.msg_id
+        if not mid:
+            return
+        with self._lock:
+            status_atual = self._status_msgs.get(mid)
+            if msg.tipo_pacote == "ack_lido":
+                self._status_msgs[mid] = "lido"
+            elif msg.tipo_pacote == "ack_recebido" and status_atual != "lido":
+                self._status_msgs[mid] = "recebido"
+        if self._callback_nova_msg:
+            self._callback_nova_msg(msg.remetente_nome)
+
+    def marcar_como_lido(self, nome_vizinho: str):
+        """Envia ACK_LIDO para todas as mensagens não-lidas de um vizinho."""
+        with self._lock:
+            msgs = list(self._historico.get(nome_vizinho, []))
+        for item in msgs:
+            if item["tipo"] in ("deles", "fwd"):
+                msg = item["msg"]
+                if msg.msg_id:
+                    self._enviar_ack(msg, "ack_lido")
+
+    def get_status(self, msg_id: str) -> str:
+        """Retorna status de uma mensagem: enviado/recebido/lido."""
+        with self._lock:
+            return self._status_msgs.get(msg_id, "enviado")
 
     # ── GETTERS THREAD-SAFE ───────────────────────────────────────────────────
 
@@ -798,6 +865,9 @@ class ChatApp(tk.Tk):
         self._redesenhar_mensagens()
         self._status_var.set(f"Conversa ativa: {viz.nome}")
 
+        # Marca mensagens desse vizinho como lidas
+        self.no.marcar_como_lido(viz.nome)
+
     # ── RENDERIZAÇÃO DE MENSAGENS ─────────────────────────────────────────────
 
     def _redesenhar_mensagens(self):
@@ -903,12 +973,30 @@ class ChatApp(tk.Tk):
             wraplength=380, justify="left", anchor="w"
         ).pack(fill="x", pady=(2, 0))
 
-        # Hora (canto inferior direito do balão)
+        # Hora + status (canto inferior direito do balão)
+        hora_frame = tk.Frame(inner, bg=bg_bubble)
+        hora_frame.pack(fill="x")
+
+        hora_txt = msg.hora()
+        if eh_meu and msg.msg_id:
+            status = self.no.get_status(msg.msg_id)
+            if status == "lido":
+                hora_txt += "  ✓✓"
+                cor_status = C["accent"]      # azul = lido
+            elif status == "recebido":
+                hora_txt += "  ✓✓"
+                cor_status = C["text_faint"]  # cinza = recebido
+            else:
+                hora_txt += "  ✓"
+                cor_status = C["text_faint"]  # cinza = enviado
+        else:
+            cor_status = C["text_faint"]
+
         tk.Label(
-            inner, text=msg.hora(),
+            hora_frame, text=hora_txt,
             font=FONT_NANO,
-            fg=C["text_faint"], bg=bg_bubble, anchor="e"
-        ).pack(fill="x")
+            fg=cor_status, bg=bg_bubble, anchor="e"
+        ).pack(side="right")
 
         if not eh_meu:
             tk.Frame(row, bg=C["bg_panel"]).pack(side="right", expand=True, fill="x")
