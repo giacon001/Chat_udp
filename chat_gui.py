@@ -1180,7 +1180,256 @@ class ChatApp(tk.Tk):
 
 
 # =============================================================================
-# SEÇÃO 5 — PARSE DE ARGUMENTOS
+# SEÇÃO 5 — TELA DE CONFIGURAÇÃO (GUI)
+# =============================================================================
+
+class TelaSetup(tk.Tk):
+    """
+    Tela inicial de configuração exibida quando o programa é executado
+    sem argumentos de linha de comando.
+
+    Permite configurar nome/IP/porta do nó local e adicionar vizinhos
+    antes de abrir o chat.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.resultado = None  # (nome, ip, porta, [Vizinho, ...])
+        self._vizinhos_frames = []
+
+        self._configurar_janela()
+        self._construir_ui()
+
+        self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
+
+    def _configurar_janela(self):
+        self.title("◈ P2P UDP Chat  ·  Configuração")
+        self.geometry("620x560")
+        self.minsize(520, 480)
+        self.resizable(False, False)
+        self.configure(bg=C["bg_deep"])
+
+    def _construir_ui(self):
+        # ── Header ────────────────────────────────────────────────────────
+        hf = tk.Frame(self, bg=C["bg_header"], height=56)
+        hf.pack(fill="x")
+        hf.pack_propagate(False)
+        tk.Frame(hf, bg=C["accent"], height=1).pack(side="bottom", fill="x")
+        tk.Label(
+            hf, text="◈ P2P UDP CHAT  ·  SETUP",
+            font=("Consolas", 15, "bold"),
+            fg=C["accent"], bg=C["bg_header"]
+        ).pack(side="left", padx=18, pady=14)
+
+        # ── Container scrollável ──────────────────────────────────────────
+        container = tk.Frame(self, bg=C["bg_deep"])
+        container.pack(fill="both", expand=True, padx=24, pady=12)
+
+        # ── Seção: Meu Computador ─────────────────────────────────────────
+        tk.Label(
+            container, text="▸ MEU COMPUTADOR",
+            font=FONT_BOLD, fg=C["accent3"], bg=C["bg_deep"]
+        ).pack(anchor="w", pady=(8, 6))
+
+        me_frame = tk.Frame(container, bg=C["bg_panel"],
+                            highlightbackground=C["border"], highlightthickness=1)
+        me_frame.pack(fill="x", pady=(0, 10))
+
+        row_me = tk.Frame(me_frame, bg=C["bg_panel"])
+        row_me.pack(fill="x", padx=12, pady=10)
+
+        # Nome
+        tk.Label(row_me, text="Nome:", font=FONT_MONO,
+                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=0, column=0, sticky="w", pady=3)
+        self._e_nome = tk.Entry(row_me, font=FONT_MONO, width=18,
+                                bg=C["bg_input"], fg=C["text_pri"],
+                                insertbackground=C["accent"],
+                                relief="flat", highlightthickness=1,
+                                highlightbackground=C["border"],
+                                highlightcolor=C["accent"])
+        self._e_nome.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
+        self._e_nome.insert(0, "Meu_PC")
+
+        # IP
+        tk.Label(row_me, text="IP:", font=FONT_MONO,
+                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=1, column=0, sticky="w", pady=3)
+        self._e_ip = tk.Entry(row_me, font=FONT_MONO, width=18,
+                              bg=C["bg_input"], fg=C["text_pri"],
+                              insertbackground=C["accent"],
+                              relief="flat", highlightthickness=1,
+                              highlightbackground=C["border"],
+                              highlightcolor=C["accent"])
+        self._e_ip.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+        self._e_ip.insert(0, "127.0.0.1")
+
+        # Porta
+        tk.Label(row_me, text="Porta:", font=FONT_MONO,
+                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=2, column=0, sticky="w", pady=3)
+        self._e_porta = tk.Entry(row_me, font=FONT_MONO, width=8,
+                                 bg=C["bg_input"], fg=C["text_pri"],
+                                 insertbackground=C["accent"],
+                                 relief="flat", highlightthickness=1,
+                                 highlightbackground=C["border"],
+                                 highlightcolor=C["accent"])
+        self._e_porta.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+        self._e_porta.insert(0, "5001")
+
+        # ── Seção: Vizinhos ───────────────────────────────────────────────
+        viz_header = tk.Frame(container, bg=C["bg_deep"])
+        viz_header.pack(fill="x", pady=(8, 6))
+        tk.Label(
+            viz_header, text="▸ VIZINHOS",
+            font=FONT_BOLD, fg=C["accent"], bg=C["bg_deep"]
+        ).pack(side="left")
+
+        btn_add = tk.Label(
+            viz_header, text="  [+ ADICIONAR]  ",
+            font=FONT_SMALL, fg=C["accent3"], bg=C["bg_deep"],
+            cursor="hand2"
+        )
+        btn_add.pack(side="right")
+        btn_add.bind("<Button-1>", lambda e: self._adicionar_vizinho())
+
+        self._viz_container = tk.Frame(container, bg=C["bg_deep"])
+        self._viz_container.pack(fill="both", expand=True)
+
+        # Adiciona 1 vizinho por padrão
+        self._adicionar_vizinho()
+
+        # ── Botão Confirmar ───────────────────────────────────────────────
+        btn_frame = tk.Frame(self, bg=C["bg_deep"])
+        btn_frame.pack(fill="x", padx=24, pady=(4, 16))
+
+        self._btn_confirmar = tk.Label(
+            btn_frame,
+            text="  ▶  INICIAR CHAT  ",
+            font=FONT_BOLD, fg=C["bg_deep"], bg=C["accent"],
+            cursor="hand2", padx=20, pady=10
+        )
+        self._btn_confirmar.pack()
+        self._btn_confirmar.bind("<Button-1>", lambda e: self._confirmar())
+        self._btn_confirmar.bind("<Enter>",
+            lambda e: self._btn_confirmar.configure(bg=C["accent3"]))
+        self._btn_confirmar.bind("<Leave>",
+            lambda e: self._btn_confirmar.configure(bg=C["accent"]))
+
+        # ── Status ────────────────────────────────────────────────────────
+        self._lbl_status = tk.Label(
+            self, text="", font=FONT_SMALL,
+            fg=C["danger"], bg=C["bg_deep"]
+        )
+        self._lbl_status.pack(pady=(0, 8))
+
+    def _adicionar_vizinho(self):
+        """Adiciona uma linha de campos para um novo vizinho."""
+        idx = len(self._vizinhos_frames)
+
+        frame = tk.Frame(self._viz_container, bg=C["bg_panel"],
+                         highlightbackground=C["border"], highlightthickness=1)
+        frame.pack(fill="x", pady=3)
+
+        row = tk.Frame(frame, bg=C["bg_panel"])
+        row.pack(fill="x", padx=10, pady=6)
+
+        # Nome
+        tk.Label(row, text="Nome:", font=FONT_SMALL,
+                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
+        e_nome = tk.Entry(row, font=FONT_MONO, width=14,
+                          bg=C["bg_input"], fg=C["text_pri"],
+                          insertbackground=C["accent"],
+                          relief="flat", highlightthickness=1,
+                          highlightbackground=C["border"],
+                          highlightcolor=C["accent"])
+        e_nome.pack(side="left", padx=(4, 10))
+        e_nome.insert(0, f"Vizinho_{idx + 1}")
+
+        # IP
+        tk.Label(row, text="IP:", font=FONT_SMALL,
+                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
+        e_ip = tk.Entry(row, font=FONT_MONO, width=14,
+                        bg=C["bg_input"], fg=C["text_pri"],
+                        insertbackground=C["accent"],
+                        relief="flat", highlightthickness=1,
+                        highlightbackground=C["border"],
+                        highlightcolor=C["accent"])
+        e_ip.pack(side="left", padx=(4, 10))
+        e_ip.insert(0, "127.0.0.1")
+
+        # Porta
+        tk.Label(row, text="Porta:", font=FONT_SMALL,
+                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
+        e_porta = tk.Entry(row, font=FONT_MONO, width=6,
+                           bg=C["bg_input"], fg=C["text_pri"],
+                           insertbackground=C["accent"],
+                           relief="flat", highlightthickness=1,
+                           highlightbackground=C["border"],
+                           highlightcolor=C["accent"])
+        e_porta.pack(side="left", padx=(4, 8))
+        e_porta.insert(0, str(5002 + idx))
+
+        # Botão remover
+        btn_rm = tk.Label(row, text=" ✕ ", font=FONT_SMALL,
+                          fg=C["danger"], bg=C["bg_panel"], cursor="hand2")
+        btn_rm.pack(side="right")
+        btn_rm.bind("<Button-1>",
+                    lambda e, f=frame, d=(frame, e_nome, e_ip, e_porta):
+                    self._remover_vizinho(d))
+
+        self._vizinhos_frames.append((frame, e_nome, e_ip, e_porta))
+
+    def _remover_vizinho(self, entry_tuple):
+        """Remove uma linha de vizinho."""
+        if len(self._vizinhos_frames) <= 1:
+            self._lbl_status.config(text="É necessário ao menos 1 vizinho.")
+            return
+        frame, _, _, _ = entry_tuple
+        frame.destroy()
+        self._vizinhos_frames.remove(entry_tuple)
+
+    def _confirmar(self):
+        """Valida os campos e armazena o resultado."""
+        self._lbl_status.config(text="")
+
+        nome = self._e_nome.get().strip()
+        ip = self._e_ip.get().strip()
+        porta_str = self._e_porta.get().strip()
+
+        if not nome:
+            self._lbl_status.config(text="Preencha o nome do seu computador.")
+            return
+        if not ip:
+            self._lbl_status.config(text="Preencha o IP do seu computador.")
+            return
+        try:
+            porta = int(porta_str)
+        except ValueError:
+            self._lbl_status.config(text=f"Porta inválida: '{porta_str}'")
+            return
+
+        vizinhos = []
+        for _, e_nome, e_ip, e_porta in self._vizinhos_frames:
+            vn = e_nome.get().strip()
+            vi = e_ip.get().strip()
+            vp = e_porta.get().strip()
+            if not vn or not vi or not vp:
+                self._lbl_status.config(text="Preencha todos os campos dos vizinhos.")
+                return
+            try:
+                vizinhos.append(Vizinho(nome=vn, ip=vi, porta=int(vp)))
+            except ValueError:
+                self._lbl_status.config(text=f"Porta inválida para '{vn}': '{vp}'")
+                return
+
+        self.resultado = (nome, ip, porta, vizinhos)
+        self.destroy()
+
+    def _ao_fechar(self):
+        self.resultado = None
+        self.destroy()
+
+
+# =============================================================================
+# SEÇÃO 6 — PARSE DE ARGUMENTOS
 # =============================================================================
 
 def parsear_argumentos():
@@ -1230,11 +1479,20 @@ def parsear_argumentos():
 
 
 # =============================================================================
-# SEÇÃO 6 — PONTO DE ENTRADA
+# SEÇÃO 7 — PONTO DE ENTRADA
 # =============================================================================
 
 if __name__ == "__main__":
-    nome, ip, porta, vizinhos = parsear_argumentos()
+    # Se há argumentos de linha de comando, usa o modo CLI (comportamento original)
+    if len(sys.argv) > 1:
+        nome, ip, porta, vizinhos = parsear_argumentos()
+    else:
+        # Sem argumentos → abre a tela de configuração gráfica
+        setup = TelaSetup()
+        setup.mainloop()
+        if setup.resultado is None:
+            sys.exit(0)
+        nome, ip, porta, vizinhos = setup.resultado
 
     # Inicia o nó UDP (socket + thread de escuta)
     no = No(nome, ip, porta, vizinhos)
