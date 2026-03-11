@@ -4,6 +4,23 @@ Sistema de chat descentralizado com interface gráfica, construído em Python pu
 
 ---
 
+## 📁 Estrutura do Projeto
+
+```
+Chat_udp/
+├── chat_network.py      # Camada de rede (UDP, Mensagem, Nó, Vizinho)
+├── chat_gui.py          # Interface gráfica (Tkinter)
+├── test_network.py      # Teste CLI da camada de rede (sem GUI)
+└── README.md
+```
+
+**Separação de responsabilidades:**
+- `chat_network.py` → Lógica UDP, thread-safe, pode ser testado independentemente
+- `chat_gui.py` → Interface visual, importa de `chat_network.py`
+- `test_network.py` → CLI simples para testes de rede sem GUI
+
+---
+
 ## Visão Geral
 
 Cada instância do programa representa um **nó** na rede P2P. Os nós se comunicam diretamente entre si via sockets UDP, sem servidor central. A topologia é definida pelos vizinhos informados na linha de comando.
@@ -75,34 +92,69 @@ Nó_A conhece Nó_B, Nó_B conhece Nó_A e Nó_C, Nó_C conhece Nó_B. Mensagens
 
 ## Como Executar
 
+### Opção 1: Interface Gráfica (GUI)
+
+**Sem argumentos (abre tela de configuração):**
+```bash
+python3 chat_gui.py
+```
+
+**Via linha de comando:**
+```bash
+# PC 1
+python3 chat_gui.py ComputadorA 192.168.137.1 5001  ComputadorB 192.168.137.2 5002
+
+# PC 2  
+python3 chat_gui.py ComputadorB 192.168.137.2 5002  ComputadorA 192.168.137.1 5001
+```
+
+### Opção 2: Teste CLI (sem GUI)
+
+Útil para debugging e testes da camada de rede:
+
+```bash
+# Terminal 1
+python3 test_network.py NoA 127.0.0.1 5001  NoB 127.0.0.1 5002
+
+# Terminal 2
+python3 test_network.py NoB 127.0.0.1 5002  NoA 127.0.0.1 5001
+```
+
+**Comandos no modo CLI:**
+- Digite texto e ENTER → envia mensagem
+- `hist` → mostra histórico de mensagens
+- `quit` → sair
+
+---
+
 ### Teste local (3 terminais no mesmo computador)
 
 **Terminal 1 — Nó A** (conhece B):
 ```bash
-python chat_gui.py No_A 127.0.0.1 5001  No_B 127.0.0.1 5002
+python3 chat_gui.py No_A 127.0.0.1 5001  No_B 127.0.0.1 5002
 ```
 
 **Terminal 2 — Nó B** (conhece A e C):
 ```bash
-python chat_gui.py No_B 127.0.0.1 5002  No_A 127.0.0.1 5001  No_C 127.0.0.1 5003
+python3 chat_gui.py No_B 127.0.0.1 5002  No_A 127.0.0.1 5001  No_C 127.0.0.1 5003
 ```
 
 **Terminal 3 — Nó C** (conhece B):
 ```bash
-python chat_gui.py No_C 127.0.0.1 5003  No_B 127.0.0.1 5002
+python3 chat_gui.py No_C 127.0.0.1 5003  No_B 127.0.0.1 5002
 ```
 
 ### Em rede local (um computador por nó)
 
 ```bash
 # Computador A (IP 192.168.1.10)
-python chat_gui.py No_A 192.168.1.10 5001  No_B 192.168.1.11 5002
+python3 chat_gui.py No_A 192.168.1.10 5001  No_B 192.168.1.11 5002
 
 # Computador B (IP 192.168.1.11)
-python chat_gui.py No_B 192.168.1.11 5002  No_A 192.168.1.10 5001  No_C 192.168.1.12 5003
+python3 chat_gui.py No_B 192.168.1.11 5002  No_A 192.168.1.10 5001  No_C 192.168.1.12 5003
 
 # Computador C (IP 192.168.1.12)
-python chat_gui.py No_C 192.168.1.12 5003  No_B 192.168.1.11 5002
+python3 chat_gui.py No_C 192.168.1.12 5003  No_B 192.168.1.11 5002
 ```
 
 ---
@@ -145,9 +197,10 @@ python chat_gui.py No_C 192.168.1.12 5003  No_B 192.168.1.11 5002
 └──────────────────────────────────────────────────────────┘
 ```
 
-| Camada         | Responsabilidade                                    |
-|----------------|-----------------------------------------------------|
-| `Mensagem`     | Estrutura de dados + serialização JSON               |
-| `Vizinho`      | Endereçamento de um nó vizinho (nome, IP, porta)     |
-| `No`           | Socket UDP, envio, escuta, encaminhamento, histórico |
-| `ChatApp`      | Interface gráfica, eventos, renderização             |
+| Camada         | Arquivo           | Responsabilidade                              |
+|----------------|-------------------|-----------------------------------------------|
+| `Mensagem`     | chat_network.py   | Estrutura de dados + serialização JSON        |
+| `Vizinho`      | chat_network.py   | Endereçamento de um nó vizinho                |
+| `No`           | chat_network.py   | Socket UDP, envio, escuta, encaminhamento     |
+| `ChatApp`      | chat_gui.py       | Interface gráfica, eventos, renderização      |
+| `TelaSetup`    | chat_gui.py       | GUI de configuração inicial                   |
