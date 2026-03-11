@@ -3,22 +3,6 @@
 =============================================================================
 SISTEMA DE MENSAGERIA P2P — PROTOCOLO UDP  |  Interface Gráfica (Tkinter)
 =============================================================================
-COMO INICIAR (um comando por computador):
-
-  Computador A:
-    python3 chat_gui.py No_A 192.168.1.10 5001  No_B 192.168.1.11 5002
-
-  Computador B:
-    python3 chat_gui.py No_B 192.168.1.11 5002  No_A 192.168.1.10 5001  No_C 192.168.1.12 5003
-
-  Computador C:
-    python3 chat_gui.py No_C 192.168.1.12 5003  No_B 192.168.1.11 5002
-
-Em localhost (teste local, 3 terminais):
-  python3 chat_gui.py No_A 127.0.0.1 5001  No_B 127.0.0.1 5002
-  python3 chat_gui.py No_B 127.0.0.1 5002  No_A 127.0.0.1 5001  No_C 127.0.0.1 5003
-  python3 chat_gui.py No_C 127.0.0.1 5003  No_B 127.0.0.1 5002
-=============================================================================
 """
 
 # ── Biblioteca padrão Python (sem instalação necessária) ──────────────────────
@@ -42,8 +26,6 @@ from tkinter import ttk, messagebox, font as tkfont
 # =============================================================================
 # PALETA E CONSTANTES VISUAIS
 # =============================================================================
-# Tema: Terminal Cyberpunk — escuro com acentos neon ciano/violeta
-# Funciona em qualquer resolução e não exige fontes externas
 
 C = {
     "bg_deep":    "#080c10",   # fundo principal (quase preto azulado)
@@ -184,11 +166,12 @@ class No:
 
         # ── Histórico por vizinho ─────────────────────────────────────────────
         # deque(maxlen=300): fila circular — evita crescimento ilimitado
+        # CHAVE: IP do vizinho (mais robusto que nome, pois IP é único na rede)
         self._historico: Dict[str, deque] = {
-            v.nome: deque(maxlen=300) for v in vizinhos
+            v.ip: deque(maxlen=300) for v in vizinhos
         }
         self._brutas: Dict[str, deque] = {
-            v.nome: deque(maxlen=50) for v in vizinhos
+            v.ip: deque(maxlen=50) for v in vizinhos
         }
 
         # ── Callbacks para a GUI ──────────────────────────────────────────────
@@ -232,11 +215,11 @@ class No:
         self._sock.sendto(msg.serializar(), vizinho.endereco)
         with self._lock:
             self._status_msgs[mid] = "enviado"
-            self._historico[vizinho.nome].append(
+            self._historico[vizinho.ip].append(
                 {"tipo": "eu", "msg": msg}
             )
         if self._callback_nova_msg:
-            self._callback_nova_msg(vizinho.nome)
+            self._callback_nova_msg(vizinho.ip)
 
     # ── ENCAMINHAMENTO ────────────────────────────────────────────────────────
 
@@ -274,11 +257,11 @@ class No:
             encaminhado_por = self.nome,
         )
         with self._lock:
-            if destino.nome not in self._historico:
-                self._historico[destino.nome] = deque(maxlen=300)
-            self._historico[destino.nome].append({"tipo": "fwd_sent", "msg": nota})
+            if destino.ip not in self._historico:
+                self._historico[destino.ip] = deque(maxlen=300)
+            self._historico[destino.ip].append({"tipo": "fwd_sent", "msg": nota})
         if self._callback_nova_msg:
-            self._callback_nova_msg(destino.nome)
+            self._callback_nova_msg(destino.ip)
 
     # ── ESCUTA UDP ────────────────────────────────────────────────────────────
 
@@ -307,19 +290,31 @@ class No:
         """
         Armazena mensagem recebida no histórico correto.
 
-        Roteamento:
-          encaminhada por vizinho conhecido → conversa daquele vizinho
-          remetente direto → conversa do remetente
-          origem nova      → cria entrada dinâmica
+        Roteamento por IP (mais robusto que nome):
+          encaminhada → IP de quem encaminhou (se conhecido)
+          remetente direto → IP do remetente
+          origem nova → cria entrada dinâmica com IP do remetente
         """
         with self._lock:
-            if (msg.encaminhado and msg.encaminhado_por
-                    and msg.encaminhado_por in self._historico):
-                chave = msg.encaminhado_por
-            elif msg.remetente_nome in self._historico:
-                chave = msg.remetente_nome
+            # Busca IP de quem encaminhou (se aplicável)
+            if msg.encaminhado and msg.encaminhado_por:
+                # Procura o IP do vizinho que tem esse nome
+                encaminhador_ip = next(
+                    (v.ip for v in self.vizinhos if v.nome == msg.encaminhado_por),
+                    None
+                )
+                if encaminhador_ip and encaminhador_ip in self._historico:
+                    chave = encaminhador_ip
+                elif msg.remetente_ip in self._historico:
+                    chave = msg.remetente_ip
+                else:
+                    chave = msg.remetente_ip
+                    self._historico[chave] = deque(maxlen=300)
+                    self._brutas[chave]    = deque(maxlen=50)
+            elif msg.remetente_ip in self._historico:
+                chave = msg.remetente_ip
             else:
-                chave = msg.remetente_nome
+                chave = msg.remetente_ip
                 self._historico[chave] = deque(maxlen=300)
                 self._brutas[chave]    = deque(maxlen=50)
 
@@ -368,12 +363,12 @@ class No:
             elif msg.tipo_pacote == "ack_recebido" and status_atual != "lido":
                 self._status_msgs[mid] = "recebido"
         if self._callback_nova_msg:
-            self._callback_nova_msg(msg.remetente_nome)
+            self._callback_nova_msg(msg.remetente_ip)
 
-    def marcar_como_lido(self, nome_vizinho: str):
+    def marcar_como_lido(self, ip_vizinho: str):
         """Envia ACK_LIDO para todas as mensagens não-lidas de um vizinho."""
         with self._lock:
-            msgs = list(self._historico.get(nome_vizinho, []))
+            msgs = list(self._historico.get(ip_vizinho, []))
         for item in msgs:
             if item["tipo"] in ("deles", "fwd"):
                 msg = item["msg"]
@@ -387,15 +382,15 @@ class No:
 
     # ── GETTERS THREAD-SAFE ───────────────────────────────────────────────────
 
-    def get_historico(self, nome: str) -> list:
-        """Cópia thread-safe do histórico de um vizinho."""
+    def get_historico(self, ip: str) -> list:
+        """Cópia thread-safe do histórico de um vizinho (por IP)."""
         with self._lock:
-            return list(self._historico.get(nome, []))
+            return list(self._historico.get(ip, []))
 
-    def get_brutas(self, nome: str) -> List[Mensagem]:
-        """Cópia thread-safe das mensagens brutas de um vizinho."""
+    def get_brutas(self, ip: str) -> List[Mensagem]:
+        """Cópia thread-safe das mensagens brutas de um vizinho (por IP)."""
         with self._lock:
-            return list(self._brutas.get(nome, []))
+            return list(self._brutas.get(ip, []))
 
     def encerrar(self):
         """Fecha socket → causa OSError no recvfrom → thread encerra."""
@@ -439,8 +434,8 @@ class ChatApp(tk.Tk):
         super().__init__()
         self.no  = no
         self._vizinho_ativo = 0           # índice do vizinho selecionado
-        self._contadores: Dict[str, int] = {  # mensagens não lidas por vizinho
-            v.nome: 0 for v in no.vizinhos
+        self._contadores: Dict[str, int] = {  # mensagens não lidas por vizinho (chave: IP)
+            v.ip: 0 for v in no.vizinhos
         }
         self._last_rendered_count = -1        # evita redesenho desnecessário
 
@@ -843,7 +838,7 @@ class ChatApp(tk.Tk):
         viz = self.no.vizinhos[idx]
 
         # Reseta badge de não-lidas e força redesenho ao trocar conversa
-        self._contadores[viz.nome] = 0
+        self._contadores[viz.ip] = 0
         self._badge_labels[viz.nome].place_forget()
         self._last_rendered_count = -1
 
@@ -866,7 +861,7 @@ class ChatApp(tk.Tk):
         self._status_var.set(f"Conversa ativa: {viz.nome}")
 
         # Marca mensagens desse vizinho como lidas
-        self.no.marcar_como_lido(viz.nome)
+        self.no.marcar_como_lido(viz.ip)
 
     # ── RENDERIZAÇÃO DE MENSAGENS ─────────────────────────────────────────────
 
@@ -882,7 +877,7 @@ class ChatApp(tk.Tk):
             w.destroy()
 
         viz   = self.no.vizinhos[self._vizinho_ativo]
-        hist  = self.no.get_historico(viz.nome)
+        hist  = self.no.get_historico(viz.ip)
 
         self._last_rendered_count = len(hist)
 
@@ -1067,7 +1062,7 @@ class ChatApp(tk.Tk):
         e para qual vizinho enviar.
         """
         viz  = self.no.vizinhos[self._vizinho_ativo]
-        msgs = self.no.get_brutas(viz.nome)
+        msgs = self.no.get_brutas(viz.ip)
 
         if not msgs:
             self._status_var.set(f"⚠  Nenhuma mensagem recebida de {viz.nome}.")
@@ -1223,16 +1218,16 @@ class ChatApp(tk.Tk):
         self._pkt_count += 1
         self._pkt_var.set(f"PKT RX: {self._pkt_count}")
 
-        viz_ativo = self.no.vizinhos[self._vizinho_ativo].nome
+        viz_ativo_ip = self.no.vizinhos[self._vizinho_ativo].ip
 
-        if chave == viz_ativo:
+        if chave == viz_ativo_ip:
             self._redesenhar_mensagens()
         else:
             if chave in self._contadores:
                 self._contadores[chave] += 1
                 n = self._contadores[chave]
                 idx = next(
-                    (i for i, v in enumerate(self.no.vizinhos) if v.nome == chave),
+                    (i for i, v in enumerate(self.no.vizinhos) if v.ip == chave),
                     None
                 )
                 if idx is not None:
@@ -1251,7 +1246,7 @@ class ChatApp(tk.Tk):
         evitando o flickering causado por destruição/recriação constante de widgets.
         """
         viz = self.no.vizinhos[self._vizinho_ativo]
-        hist = self.no.get_historico(viz.nome)
+        hist = self.no.get_historico(viz.ip)
         if len(hist) != self._last_rendered_count:
             self._redesenhar_mensagens()
         self.after(200, self._tick)
