@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont
 
 # ── Importa camada de rede (lógica UDP separada) ──────────────────────────────
-from chat_network import Mensagem, Vizinho, No
+from chat_network import CHAT_PORT, Mensagem, Vizinho, No
 
 
 # =============================================================================
@@ -926,7 +926,7 @@ class TelaSetup(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.resultado = None  # (nome, ip, porta, [Vizinho, ...])
+        self.resultado = None  # (nome, ip, [Vizinho, ...])
         self._vizinhos_frames = []
 
         self._configurar_janela()
@@ -1006,20 +1006,18 @@ class TelaSetup(tk.Tk):
             font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
         ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=3)
 
-        # Porta
+        # Porta padronizada
         tk.Label(row_me, text="Porta:", font=FONT_MONO,
                  fg=C["text_sec"], bg=C["bg_panel"]).grid(row=2, column=0, sticky="w", pady=3)
-        self._e_porta = tk.Entry(row_me, font=FONT_MONO, width=8,
-                                 bg=C["bg_input"], fg=C["text_pri"],
-                                 insertbackground=C["accent"],
-                                 relief="flat", highlightthickness=1,
-                                 highlightbackground=C["border"],
-                                 highlightcolor=C["accent"])
-        self._e_porta.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
-        self._e_porta.insert(0, "5001")
         tk.Label(
             row_me,
-            text="Recomendado: use portas entre 5001-5009 (uma diferente por PC)",
+            text=f"{CHAT_PORT}  (porta fixa do chat)",
+            font=FONT_MONO,
+            fg=C["accent"], bg=C["bg_panel"]
+        ).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+        tk.Label(
+            row_me,
+            text="Todos os computadores usam a mesma porta; basta informar os IPs corretos.",
             font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
         ).grid(row=2, column=2, sticky="w", padx=(10, 0), pady=3)
 
@@ -1111,27 +1109,18 @@ class TelaSetup(tk.Tk):
         e_ip.pack(side="left", padx=(4, 10))
         e_ip.insert(0, "127.0.0.1")
 
-        # Porta
-        tk.Label(row, text="Porta:", font=FONT_SMALL,
-                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
-        e_porta = tk.Entry(row, font=FONT_MONO, width=6,
-                           bg=C["bg_input"], fg=C["text_pri"],
-                           insertbackground=C["accent"],
-                           relief="flat", highlightthickness=1,
-                           highlightbackground=C["border"],
-                           highlightcolor=C["accent"])
-        e_porta.pack(side="left", padx=(4, 8))
-        e_porta.insert(0, str(5002 + idx))
+        tk.Label(row, text=f"Porta fixa: {CHAT_PORT}", font=FONT_SMALL,
+             fg=C["accent"], bg=C["bg_panel"]).pack(side="left", padx=(4, 8))
 
         # Botão remover
         btn_rm = tk.Label(row, text=" ✕ ", font=FONT_SMALL,
                           fg=C["danger"], bg=C["bg_panel"], cursor="hand2")
         btn_rm.pack(side="right")
         btn_rm.bind("<Button-1>",
-                    lambda e, f=frame, d=(frame, e_nome, e_ip, e_porta):
+                    lambda e, f=frame, d=(frame, e_nome, e_ip):
                     self._remover_vizinho(d))
 
-        self._vizinhos_frames.append((frame, e_nome, e_ip, e_porta))
+        self._vizinhos_frames.append((frame, e_nome, e_ip))
 
     def _remover_vizinho(self, entry_tuple):
         """Remove uma linha de vizinho."""
@@ -1148,7 +1137,6 @@ class TelaSetup(tk.Tk):
 
         nome = self._e_nome.get().strip()
         ip = self._e_ip.get().strip()
-        porta_str = self._e_porta.get().strip()
 
         if not nome:
             self._lbl_status.config(text="Preencha o nome do seu computador.")
@@ -1156,27 +1144,16 @@ class TelaSetup(tk.Tk):
         if not ip:
             self._lbl_status.config(text="Preencha o IP do seu computador.")
             return
-        try:
-            porta = int(porta_str)
-        except ValueError:
-            self._lbl_status.config(text=f"Porta inválida: '{porta_str}'")
-            return
-
         vizinhos = []
-        for _, e_nome, e_ip, e_porta in self._vizinhos_frames:
+        for _, e_nome, e_ip in self._vizinhos_frames:
             vn = e_nome.get().strip()
             vi = e_ip.get().strip()
-            vp = e_porta.get().strip()
-            if not vn or not vi or not vp:
+            if not vn or not vi:
                 self._lbl_status.config(text="Preencha todos os campos dos vizinhos.")
                 return
-            try:
-                vizinhos.append(Vizinho(nome=vn, ip=vi, porta=int(vp)))
-            except ValueError:
-                self._lbl_status.config(text=f"Porta inválida para '{vn}': '{vp}'")
-                return
+            vizinhos.append(Vizinho(nome=vn, ip=vi))
 
-        self.resultado = (nome, ip, porta, vizinhos)
+        self.resultado = (nome, ip, vizinhos)
         self.destroy()
 
     def _ao_fechar(self):
@@ -1193,45 +1170,35 @@ def parsear_argumentos():
     Lê e valida argumentos da linha de comando.
 
     Formato:
-      python3 chat_gui.py <nome> <ip> <porta>
-                          <viz1_nome> <viz1_ip> <viz1_porta>
-                         [<viz2_nome> <viz2_ip> <viz2_porta>]
+      python3 chat_gui.py <nome> <ip>
+                          <viz1_nome> <viz1_ip>
+                         [<viz2_nome> <viz2_ip>]
 
-    range(3, len(args), 3) itera em passos de 3 a partir do índice 3,
-    lendo cada trio (nome, ip, porta) de vizinho.
+    range(2, len(args), 2) itera em passos de 2 a partir do índice 2,
+    lendo cada par (nome, ip) de vizinho.
     """
     args = sys.argv[1:]
-    if len(args) < 6:
+    if len(args) < 4:
         print(__doc__)
         print("ERRO: Argumentos insuficientes.")
         sys.exit(1)
 
     nome = args[0]
     ip   = args[1]
-    try:
-        porta = int(args[2])
-    except ValueError:
-        print(f"ERRO: '{args[2]}' não é uma porta válida.")
-        sys.exit(1)
 
     vizinhos = []
-    for i in range(3, len(args), 3):
-        if i + 2 < len(args):
-            try:
-                vizinhos.append(Vizinho(
-                    nome  = args[i],
-                    ip    = args[i + 1],
-                    porta = int(args[i + 2])
-                ))
-            except ValueError:
-                print(f"ERRO: porta inválida para '{args[i]}'.")
-                sys.exit(1)
+    for i in range(2, len(args), 2):
+        if i + 1 < len(args):
+            vizinhos.append(Vizinho(
+                nome=args[i],
+                ip=args[i + 1],
+            ))
 
     if not vizinhos:
         print("ERRO: Informe ao menos 1 vizinho.")
         sys.exit(1)
 
-    return nome, ip, porta, vizinhos
+    return nome, ip, vizinhos
 
 
 # =============================================================================
@@ -1241,17 +1208,17 @@ def parsear_argumentos():
 if __name__ == "__main__":
     # Se há argumentos de linha de comando, usa o modo CLI (comportamento original)
     if len(sys.argv) > 1:
-        nome, ip, porta, vizinhos = parsear_argumentos()
+        nome, ip, vizinhos = parsear_argumentos()
     else:
         # Sem argumentos → abre a tela de configuração gráfica
         setup = TelaSetup()
         setup.mainloop()
         if setup.resultado is None:
             sys.exit(0)
-        nome, ip, porta, vizinhos = setup.resultado
+        nome, ip, vizinhos = setup.resultado
 
     # Inicia o nó UDP (socket + thread de escuta)
-    no = No(nome, ip, porta, vizinhos)
+    no = No(nome, ip, vizinhos)
 
     # Inicia a interface gráfica (bloqueia até fechar a janela)
     app = ChatApp(no)

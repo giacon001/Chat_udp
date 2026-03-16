@@ -19,6 +19,9 @@ from datetime import datetime
 from copy import deepcopy
 
 
+CHAT_PORT = 5001
+
+
 # =============================================================================
 # SEÇÃO 1 — ESTRUTURA DA MENSAGEM
 # =============================================================================
@@ -88,7 +91,7 @@ class Vizinho:
     """Endereçamento de um nó vizinho."""
     nome: str
     ip: str
-    porta: int
+    porta: int = CHAT_PORT
 
     @property
     def endereco(self) -> tuple:
@@ -112,7 +115,7 @@ class No:
     mantém histórico de mensagens por vizinho (thread-safe com Lock).
     """
 
-    def __init__(self, nome: str, ip: str, porta: int, vizinhos: List[Vizinho]):
+    def __init__(self, nome: str, ip: str, vizinhos: List[Vizinho], porta: int = CHAT_PORT):
         self.nome     = nome
         self.ip       = ip
         self.porta    = porta

@@ -10,14 +10,16 @@ Sistema de chat descentralizado com interface gráfica, construído em Python pu
 Chat_udp/
 ├── chat_network.py      # Camada de rede (UDP, Mensagem, Nó, Vizinho)
 ├── chat_gui.py          # Interface gráfica (Tkinter)
-├── test_network.py      # Teste CLI da camada de rede (sem GUI)
 └── README.md
 ```
 
 **Separação de responsabilidades:**
 - `chat_network.py` → Lógica UDP, thread-safe, pode ser testado independentemente
 - `chat_gui.py` → Interface visual, importa de `chat_network.py`
-- `test_network.py` → CLI simples para testes de rede sem GUI
+
+**Porta padronizada:**
+- O chat usa a porta fixa `5001` em todas as máquinas.
+- Você só informa nomes e IPs; a porta não precisa mais ser digitada.
 
 ---
 
@@ -102,59 +104,25 @@ python3 chat_gui.py
 **Via linha de comando:**
 ```bash
 # PC 1
-python3 chat_gui.py ComputadorA 192.168.137.1 5001  ComputadorB 192.168.137.2 5002
+python3 chat_gui.py ComputadorA 192.168.137.1 ComputadorB 192.168.137.2
 
 # PC 2  
-python3 chat_gui.py ComputadorB 192.168.137.2 5002  ComputadorA 192.168.137.1 5001
+python3 chat_gui.py ComputadorB 192.168.137.2 ComputadorA 192.168.137.1
 ```
-
-### Opção 2: Teste CLI (sem GUI)
-
-Útil para debugging e testes da camada de rede:
-
-```bash
-# Terminal 1
-python3 test_network.py NoA 127.0.0.1 5001  NoB 127.0.0.1 5002
-
-# Terminal 2
-python3 test_network.py NoB 127.0.0.1 5002  NoA 127.0.0.1 5001
-```
-
-**Comandos no modo CLI:**
-- Digite texto e ENTER → envia mensagem
-- `hist` → mostra histórico de mensagens
-- `quit` → sair
 
 ---
-
-### Teste local (3 terminais no mesmo computador)
-
-**Terminal 1 — Nó A** (conhece B):
-```bash
-python3 chat_gui.py No_A 127.0.0.1 5001  No_B 127.0.0.1 5002
-```
-
-**Terminal 2 — Nó B** (conhece A e C):
-```bash
-python3 chat_gui.py No_B 127.0.0.1 5002  No_A 127.0.0.1 5001  No_C 127.0.0.1 5003
-```
-
-**Terminal 3 — Nó C** (conhece B):
-```bash
-python3 chat_gui.py No_C 127.0.0.1 5003  No_B 127.0.0.1 5002
-```
 
 ### Em rede local (um computador por nó)
 
 ```bash
 # Computador A (IP 192.168.1.10)
-python3 chat_gui.py No_A 192.168.1.10 5001  No_B 192.168.1.11 5002
+python3 chat_gui.py No_A 192.168.1.10 No_B 192.168.1.11
 
 # Computador B (IP 192.168.1.11)
-python3 chat_gui.py No_B 192.168.1.11 5002  No_A 192.168.1.10 5001  No_C 192.168.1.12 5003
+python3 chat_gui.py No_B 192.168.1.11 No_A 192.168.1.10 No_C 192.168.1.12
 
 # Computador C (IP 192.168.1.12)
-python3 chat_gui.py No_C 192.168.1.12 5003  No_B 192.168.1.11 5002
+python3 chat_gui.py No_C 192.168.1.12 No_B 192.168.1.11
 ```
 
 ---
