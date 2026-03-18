@@ -54,6 +54,9 @@ class No:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("0.0.0.0", self.porta))
 
+        # Mapeia IP -> apelido local da conversa (evita duplicação por nomes diferentes)
+        self._alias_por_ip: Dict[str, str] = {v.ip: v.nome for v in vizinhos}
+
         self._historico: Dict[str, deque] = {v.nome: deque(maxlen=300) for v in vizinhos}
         self._brutas: Dict[str, deque] = {v.nome: deque(maxlen=100) for v in vizinhos}
         self._lock = threading.Lock()
@@ -73,6 +76,13 @@ class No:
         if conversa not in self._historico:
             self._historico[conversa] = deque(maxlen=300)
             self._brutas[conversa] = deque(maxlen=100)
+
+    def _conversa_por_origem(self, remetente_ip: str, remetente_nome: str) -> str:
+        # Se IP já é conhecido localmente, sempre usa o apelido local.
+        if remetente_ip in self._alias_por_ip:
+            return self._alias_por_ip[remetente_ip]
+        # Origem desconhecida: usa nome vindo no pacote ou IP como fallback.
+        return remetente_nome or remetente_ip
 
     def enviar(self, destino: Vizinho, conteudo: str):
         msg = Mensagem(
@@ -140,7 +150,7 @@ class No:
                 continue
 
     def _processar(self, msg: Mensagem):
-        conversa = msg.remetente_nome
+        conversa = self._conversa_por_origem(msg.remetente_ip, msg.remetente_nome)
         tipo = "fwd" if msg.encaminhado else "deles"
 
         with self._lock:

@@ -78,6 +78,7 @@ class ChatCLI:
     def _ajuda(self):
         self._safe_print(
             """
+==================== COMANDOS ====================
 Comandos:
   /ajuda                         Mostra esta ajuda
   /conversas                     Lista conversas
@@ -88,6 +89,7 @@ Comandos:
   /sair                          Encerra
 
 Dica: se digitar texto sem comando, equivale a /enviar <texto>.
+==================================================
 """.strip()
         )
 
@@ -141,9 +143,14 @@ Dica: se digitar texto sem comando, equivale a /enviar <texto>.
         self._safe_print(f"✅ Encaminhado para {destino.nome}")
 
     def executar(self):
-        self._safe_print("\n◈ CHAT P2P UDP (CLI)")
-        self._safe_print(f"Nó: {self.no.nome}  ({self.no.ip}:{self.no.porta})")
-        self._safe_print("Digite /ajuda para ver comandos.\n")
+        self._safe_print("\n==================== CHAT_UDP ====================")
+        self._safe_print("        Sistema de Mensageria P2P (UDP)")
+        self._safe_print("--------------------------------------------------")
+        self._safe_print(f" Nó local : {self.no.nome}")
+        self._safe_print(f" Endereço : {self.no.ip}:{self.no.porta}")
+        self._safe_print("--------------------------------------------------")
+        self._safe_print(" Digite /ajuda para listar comandos")
+        self._safe_print("==================================================\n")
         self._listar_conversas()
 
         while True:
