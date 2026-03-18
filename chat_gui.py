@@ -1,1228 +1,225 @@
 
-"""
-=============================================================================
-SISTEMA DE MENSAGERIA P2P — PROTOCOLO UDP  |  Interface Gráfica (Tkinter)
-=============================================================================
-"""
+import sys
+import threading
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
-# ── Biblioteca padrão Python (sem instalação necessária) ──────────────────────
-import sys              # sys.argv (argumentos da linha de comando)
-from typing import List, Dict
-
-# ── Tkinter (GUI nativa Python — funciona em Windows, macOS e Linux) ─────────
-import tkinter as tk
-from tkinter import ttk, messagebox, font as tkfont
-
-# ── Importa camada de rede (lógica UDP separada) ──────────────────────────────
-from chat_network import CHAT_PORT, Mensagem, Vizinho, No
+from chat_network import Mensagem, No, Vizinho
 
 
-# =============================================================================
-# PALETA E CONSTANTES VISUAIS
-# =============================================================================
-
-C = {
-    "bg_deep":    "#080c10",   # fundo principal (quase preto azulado)
-    "bg_panel":   "#0d1117",   # painel de chat
-    "bg_input":   "#161b22",   # campo de digitação
-    "bg_bubble_me":    "#0a2a4a",  # balão mensagem própria (azul escuro)
-    "bg_bubble_other": "#141f2e",  # balão mensagem recebida
-    "bg_bubble_fwd":   "#1a1a0a",  # balão encaminhamento (amarelado escuro)
-    "bg_header":  "#0d1117",
-    "bg_sidebar": "#0d1117",
-    "accent":     "#00d4ff",   # ciano neon (cor principal de destaque)
-    "accent2":    "#7c3aed",   # violeta (botão encaminhar)
-    "accent3":    "#10b981",   # verde esmeralda (mensagens enviadas)
-    "accent4":    "#f59e0b",   # âmbar (encaminhamento)
-    "text_pri":   "#e6edf3",   # texto principal (quase branco)
-    "text_sec":   "#8b949e",   # texto secundário (cinza)
-    "text_faint": "#3d444d",   # texto apagado (separadores)
-    "border":     "#21262d",   # bordas sutis
-    "online":     "#3fb950",   # verde status online
-    "danger":     "#f85149",   # vermelho erro
-}
-
-FONT_MONO  = ("Consolas", 11)          # Windows/Linux
-FONT_MONO2 = ("Courier New", 11)       # fallback universal
-FONT_BOLD  = ("Consolas", 12, "bold")
-FONT_SMALL = ("Consolas", 9)
-FONT_TITLE = ("Consolas", 14, "bold")
-FONT_NANO  = ("Consolas", 8)
+@dataclass
+class EstadoCLI:
+    conversa_ativa: str
+    nao_lidas: Dict[str, int]
 
 
-# =============================================================================
-# INTERFACE GRÁFICA (Tkinter)
-# =============================================================================
-
-class ChatApp(tk.Tk):
-    """
-    Janela principal do chat P2P.
-
-    Herda de tk.Tk (janela raiz do Tkinter).
-    Cria todos os widgets, configura o tema escuro e
-    inicia o polling de mensagens novas via after().
-
-    Layout:
-    ┌─────────────────────────────────────────────────────┐
-    │  HEADER: logo + info do nó + status online         │
-    ├───────────────────┬─────────────────────────────────┤
-    │  SIDEBAR          │  PAINEL DE CHAT                 │
-    │  lista de vizinhos│  ┌──────────────────────────┐  │
-    │  + estatísticas   │  │  cabeçalho conversa      │  │
-    │                   │  │  área de mensagens       │  │
-    │                   │  │  (scrollável)            │  │
-    │                   │  ├──────────────────────────┤  │
-    │                   │  │  campo de input + botões │  │
-    │                   │  └──────────────────────────┘  │
-    ├───────────────────┴─────────────────────────────────┤
-    │  STATUS BAR                                         │
-    └─────────────────────────────────────────────────────┘
-    """
-
+class ChatCLI:
     def __init__(self, no: No):
-        super().__init__()
-        self.no  = no
-        self._vizinho_ativo = 0           # índice do vizinho selecionado
-        self._contadores: Dict[str, int] = {  # mensagens não lidas por vizinho (chave: IP)
-            v.ip: 0 for v in no.vizinhos
-        }
-        self._last_rendered_count = -1        # evita redesenho desnecessário
-
-        # ── Registra callback de mensagem nova ────────────────────────────────
-        # A thread de escuta chamará _on_nova_msg() quando chegar mensagem.
-        # Como operações de GUI devem rodar na thread principal,
-        # usamos self.after(0, ...) para enfileirar na fila de eventos do Tk.
-        self.no._callback_nova_msg = self._on_nova_msg_thread_safe
-
-        self._configurar_janela()
-        self._construir_ui()
-        self._selecionar_vizinho(0)
-
-        # ── Polling de atualização ────────────────────────────────────────────
-        # after(100, func) agenda func para rodar após 100ms na thread da GUI.
-        # Isso garante que atualizações de histórico apareçam na tela.
-        self.after(100, self._tick)
-
-        # Encerramento limpo
-        self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
-
-    # ── CONFIGURAÇÃO DA JANELA ────────────────────────────────────────────────
-
-    def _configurar_janela(self):
-        """
-        Configura título, tamanho mínimo, cor de fundo e ícone da janela.
-        """
-        self.title(f"P2P UDP Chat  ·  {self.no.nome}")
-        self.geometry("1100x680")
-        self.minsize(800, 520)
-        self.configure(bg=C["bg_deep"])
-        # Tenta carregar ícone (ignora silenciosamente se não encontrar)
-        try:
-            self.iconbitmap("icon.ico")
-        except Exception:
-            pass
-
-    # ── CONSTRUÇÃO DA INTERFACE ───────────────────────────────────────────────
-
-    def _construir_ui(self):
-        """
-        Cria todos os widgets e faz o layout com grid/pack.
-
-        Estrutura de frames:
-          header_frame    → faixa superior com logo e info
-          main_frame      → conteúdo principal (sidebar + chat)
-            sidebar_frame → lista de conversas
-            chat_frame    → painel de mensagens
-              conv_header → nome/ip do vizinho ativo
-              msg_canvas  → área scrollável de mensagens
-              input_frame → campo de texto + botões
-          statusbar       → linha inferior de status
-        """
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-        self._build_header()
-        self._build_main()
-        self._build_statusbar()
-
-    # ── HEADER ────────────────────────────────────────────────────────────────
-
-    def _build_header(self):
-        """
-        Faixa superior: logo animado + nome do nó + IP:porta + status ONLINE.
-        """
-        hf = tk.Frame(self, bg=C["bg_header"], height=56)
-        hf.grid(row=0, column=0, sticky="ew")
-        hf.grid_propagate(False)
-
-        # Linha de separação inferior do header
-        sep = tk.Frame(hf, bg=C["accent"], height=1)
-        sep.pack(side="bottom", fill="x")
-
-        # Logo / título
-        tk.Label(
-            hf, text="◈ P2P UDP CHAT",
-            font=("Consolas", 15, "bold"),
-            fg=C["accent"], bg=C["bg_header"]
-        ).pack(side="left", padx=18, pady=14)
-
-        # Separador vertical
-        tk.Frame(hf, bg=C["border"], width=1).pack(side="left", fill="y", pady=10)
-
-        # Info do nó (nome + IP:porta)
-        info_frame = tk.Frame(hf, bg=C["bg_header"])
-        info_frame.pack(side="left", padx=18)
-        tk.Label(
-            info_frame, text=f"  {self.no.nome}",
-            font=FONT_BOLD, fg=C["text_pri"], bg=C["bg_header"]
-        ).pack(anchor="w")
-        tk.Label(
-            info_frame, text=f"  {self.no.ip} : {self.no.porta}",
-            font=FONT_SMALL, fg=C["text_sec"], bg=C["bg_header"]
-        ).pack(anchor="w")
-
-        # Status ONLINE (lado direito)
-        status_f = tk.Frame(hf, bg=C["bg_header"])
-        status_f.pack(side="right", padx=18)
-        tk.Label(
-            status_f, text="●  ONLINE",
-            font=FONT_SMALL, fg=C["online"], bg=C["bg_header"]
-        ).pack()
-        tk.Label(
-            status_f, text=f"UDP / IPv4",
-            font=FONT_NANO, fg=C["text_faint"], bg=C["bg_header"]
-        ).pack()
-
-    # ── MAIN (sidebar + chat) ─────────────────────────────────────────────────
-
-    def _build_main(self):
-        main = tk.Frame(self, bg=C["bg_deep"])
-        main.grid(row=1, column=0, sticky="nsew")
-        main.grid_rowconfigure(0, weight=1)
-        main.grid_columnconfigure(1, weight=1)
-
-        self._build_sidebar(main)
-        self._build_chat(main)
-
-    # ── SIDEBAR ───────────────────────────────────────────────────────────────
-
-    def _build_sidebar(self, parent):
-        """
-        Painel lateral esquerdo: lista de vizinhos clicáveis.
-        Cada botão mostra nome, IP:porta e badge de não-lidas.
-        """
-        sb = tk.Frame(parent, bg=C["bg_sidebar"], width=200)
-        sb.grid(row=0, column=0, sticky="ns")
-        sb.grid_propagate(False)
-
-        # Separador vertical direito
-        tk.Frame(sb, bg=C["border"], width=1).pack(side="right", fill="y")
-
-        tk.Label(
-            sb, text="CONVERSAS",
-            font=("Consolas", 8, "bold"),
-            fg=C["text_faint"], bg=C["bg_sidebar"]
-        ).pack(anchor="w", padx=12, pady=(14, 4))
-
-        self._sidebar_btns: List[tk.Frame] = []
-        self._badge_labels: Dict[str, tk.Label] = {}
-
-        for i, viz in enumerate(self.no.vizinhos):
-            btn_frame = tk.Frame(sb, bg=C["bg_sidebar"], cursor="hand2")
-            btn_frame.pack(fill="x", padx=6, pady=2)
-
-            # Indicador colorido lateral (acende quando selecionado)
-            indicator = tk.Frame(btn_frame, bg=C["bg_sidebar"], width=3)
-            indicator.pack(side="left", fill="y")
-
-            inner = tk.Frame(btn_frame, bg=C["bg_sidebar"])
-            inner.pack(side="left", fill="both", expand=True, padx=8, pady=8)
-
-            tk.Label(
-                inner, text=viz.nome,
-                font=("Consolas", 11, "bold"),
-                fg=C["text_pri"], bg=C["bg_sidebar"], anchor="w"
-            ).pack(fill="x")
-            tk.Label(
-                inner, text=f"{viz.ip}:{viz.porta}",
-                font=FONT_NANO,
-                fg=C["text_sec"], bg=C["bg_sidebar"], anchor="w"
-            ).pack(fill="x")
-
-            # Badge de mensagens não lidas
-            badge = tk.Label(
-                btn_frame, text="",
-                font=("Consolas", 8, "bold"),
-                fg=C["bg_deep"], bg=C["accent"],
-                padx=4, pady=1
-            )
-            self._badge_labels[viz.nome] = badge
-
-            # Bind de clique em todos os sub-widgets
-            idx = i
-            for w in [btn_frame, inner, indicator] + list(inner.winfo_children()):
-                w.bind("<Button-1>", lambda e, x=idx: self._selecionar_vizinho(x))
-                w.bind("<Enter>",    lambda e, f=btn_frame: f.configure(bg=C["bg_input"]))
-                w.bind("<Leave>",    lambda e, f=btn_frame: self._reset_sidebar_hover(f))
-
-            btn_frame._indicator = indicator
-            btn_frame._inner     = inner
-            self._sidebar_btns.append(btn_frame)
-
-        # Separador + info de teclas
-        tk.Frame(sb, bg=C["border"], height=1).pack(fill="x", padx=6, pady=8)
-        help_txt = "ENTER  enviar\nF      encaminhar\nESC    cancelar"
-        tk.Label(
-            sb, text=help_txt,
-            font=("Consolas", 8),
-            fg=C["text_faint"], bg=C["bg_sidebar"],
-            justify="left"
-        ).pack(anchor="w", padx=14, pady=4)
-
-    def _reset_sidebar_hover(self, frame):
-        """Remove highlight de hover se o item não estiver selecionado."""
-        idx = self._sidebar_btns.index(frame)
-        if idx != self._vizinho_ativo:
-            frame.configure(bg=C["bg_sidebar"])
-
-    # ── PAINEL DE CHAT ────────────────────────────────────────────────────────
-
-    def _build_chat(self, parent):
-        """
-        Área principal de chat:
-          conv_header → nome e info da conversa ativa
-          msg_frame   → canvas scrollável com os balões de mensagem
-          input_frame → campo de texto + botões Enviar/Encaminhar
-        """
-        cf = tk.Frame(parent, bg=C["bg_panel"])
-        cf.grid(row=0, column=1, sticky="nsew")
-        cf.grid_rowconfigure(1, weight=1)
-        cf.grid_columnconfigure(0, weight=1)
-
-        # ── Cabeçalho da conversa ─────────────────────────────────────────────
-        self._conv_header = tk.Frame(cf, bg=C["bg_header"], height=46)
-        self._conv_header.grid(row=0, column=0, sticky="ew")
-        self._conv_header.grid_propagate(False)
-        tk.Frame(self._conv_header, bg=C["border"], height=1).pack(side="bottom", fill="x")
-
-        self._conv_title = tk.Label(
-            self._conv_header, text="",
-            font=FONT_BOLD, fg=C["accent"], bg=C["bg_header"]
-        )
-        self._conv_title.pack(side="left", padx=16, pady=12)
-
-        self._conv_sub = tk.Label(
-            self._conv_header, text="",
-            font=FONT_NANO, fg=C["text_sec"], bg=C["bg_header"]
-        )
-        self._conv_sub.pack(side="left", padx=0, pady=12)
-
-        # ── Área de mensagens (Canvas + Scrollbar) ────────────────────────────
-        # Usamos Canvas em vez de Frame para poder fazer scroll suave.
-        msg_outer = tk.Frame(cf, bg=C["bg_panel"])
-        msg_outer.grid(row=1, column=0, sticky="nsew")
-        msg_outer.grid_rowconfigure(0, weight=1)
-        msg_outer.grid_columnconfigure(0, weight=1)
-
-        self._canvas = tk.Canvas(
-            msg_outer, bg=C["bg_panel"],
-            highlightthickness=0, bd=0
-        )
-        self._canvas.grid(row=0, column=0, sticky="nsew")
-
-        vscroll = tk.Scrollbar(
-            msg_outer, orient="vertical",
-            command=self._canvas.yview,
-            bg=C["bg_panel"], troughcolor=C["bg_panel"],
-            activebackground=C["accent"]
-        )
-        vscroll.grid(row=0, column=1, sticky="ns")
-        self._canvas.configure(yscrollcommand=vscroll.set)
-
-        # Frame interno do canvas (onde os balões são inseridos)
-        self._msg_frame = tk.Frame(self._canvas, bg=C["bg_panel"])
-        self._canvas_win = self._canvas.create_window(
-            (0, 0), window=self._msg_frame, anchor="nw"
-        )
-
-        # Ajusta a largura do frame interno quando o canvas é redimensionado
-        self._canvas.bind("<Configure>", self._on_canvas_resize)
-        self._msg_frame.bind("<Configure>", self._on_msgframe_resize)
-
-        # Scroll com roda do mouse (Windows, Linux, macOS)
-        self._canvas.bind_all("<MouseWheel>",       self._on_mousewheel)
-        self._canvas.bind_all("<Button-4>",         self._on_mousewheel)
-        self._canvas.bind_all("<Button-5>",         self._on_mousewheel)
-
-        # ── Input + botões ────────────────────────────────────────────────────
-        self._build_input(cf)
-
-    def _build_input(self, parent):
-        """
-        Rodapé com campo de texto e botões Enviar / Encaminhar.
-
-        Entry com bind de teclas:
-          <Return>   → enviar mensagem
-          <Escape>   → cancelar modo encaminhamento
-          <Key-f>    → ativar modo encaminhamento (se campo vazio)
-        """
-        if_frame = tk.Frame(parent, bg=C["bg_input"], height=72)
-        if_frame.grid(row=2, column=0, sticky="ew")
-        if_frame.grid_propagate(False)
-        tk.Frame(if_frame, bg=C["accent"], height=1).pack(side="top", fill="x")
-
-        inner = tk.Frame(if_frame, bg=C["bg_input"])
-        inner.pack(fill="both", expand=True, padx=12, pady=10)
-        inner.grid_columnconfigure(0, weight=1)
-
-        # Campo de texto
-        self._entry = tk.Entry(
-            inner,
-            font=FONT_MONO,
-            fg=C["text_pri"],
-            bg=C["bg_deep"],
-            insertbackground=C["accent"],
-            relief="flat",
-            bd=6,
-        )
-        self._entry.grid(row=0, column=0, sticky="ew", ipady=6)
-        self._entry.bind("<Return>",  self._ao_enviar)
-        self._entry.bind("<Escape>",  self._cancelar_encaminhar)
-        self._entry.bind("<Key-f>",   self._tecla_f)
-        self._entry.bind("<Key-F>",   self._tecla_f)
-        self._entry.focus_set()
-
-        # Frame de botões
-        btn_frame = tk.Frame(inner, bg=C["bg_input"])
-        btn_frame.grid(row=0, column=1, padx=(8, 0))
-
-        self._btn_enviar = self._make_button(
-            btn_frame, "ENVIAR ▶", C["accent"], C["bg_deep"],
-            self._ao_enviar
-        )
-        self._btn_enviar.pack(side="left", padx=(0, 4))
-
-        self._btn_fwd = self._make_button(
-            btn_frame, "↩ ENCAMINHAR", C["accent2"], C["text_pri"],
-            self._iniciar_encaminhar
-        )
-        self._btn_fwd.pack(side="left")
-
-    def _make_button(self, parent, text, bg, fg, cmd):
-        """
-        Cria um botão estilizado com hover effect.
-
-        Hover: inverte as cores de fundo/texto para dar feedback visual.
-        activebackground/fg controlam o estado de clique no Tk.
-        """
-        btn = tk.Button(
-            parent, text=text,
-            font=("Consolas", 9, "bold"),
-            fg=fg, bg=bg,
-            activebackground=fg,
-            activeforeground=bg,
-            relief="flat", bd=0,
-            padx=10, pady=6,
-            cursor="hand2",
-            command=cmd
-        )
-        btn.bind("<Enter>", lambda e: btn.configure(bg=self._lighten(bg)))
-        btn.bind("<Leave>", lambda e: btn.configure(bg=bg))
-        return btn
-
-    @staticmethod
-    def _lighten(hex_color: str, amount: int = 30) -> str:
-        """
-        Clareia uma cor hex somando 'amount' a cada canal RGB.
-        Usado no hover dos botões.
-        """
-        hex_color = hex_color.lstrip("#")
-        r, g, b = (int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        r, g, b = (min(255, c + amount) for c in (r, g, b))
-        return f"#{r:02x}{g:02x}{b:02x}"
-
-    # ── STATUSBAR ─────────────────────────────────────────────────────────────
-
-    def _build_statusbar(self):
-        """
-        Linha inferior: mensagens de feedback (envio, erro, encaminhamento).
-        """
-        sb = tk.Frame(self, bg=C["bg_deep"], height=24)
-        sb.grid(row=2, column=0, sticky="ew")
-        tk.Frame(sb, bg=C["border"], height=1).pack(side="top", fill="x")
-
-        self._status_var = tk.StringVar(value="Pronto.")
-        tk.Label(
-            sb,
-            textvariable=self._status_var,
-            font=FONT_NANO,
-            fg=C["text_sec"], bg=C["bg_deep"],
-            anchor="w"
-        ).pack(side="left", padx=12)
-
-        # Número de pacotes UDP recebidos (contador)
-        self._pkt_var = tk.StringVar(value="PKT RX: 0")
-        tk.Label(
-            sb,
-            textvariable=self._pkt_var,
-            font=FONT_NANO,
-            fg=C["text_faint"], bg=C["bg_deep"]
-        ).pack(side="right", padx=12)
-
-        self._pkt_count = 0
-
-    # ── SELEÇÃO DE VIZINHO ────────────────────────────────────────────────────
-
-    def _selecionar_vizinho(self, idx: int):
-        """
-        Muda a conversa ativa: atualiza a sidebar e redesenha as mensagens.
-
-        Reseta o contador de não-lidas para o vizinho selecionado.
-        Desmarca o indicator bar de todos os botões e marca o selecionado.
-        """
-        if idx >= len(self.no.vizinhos):
-            return
-
-        self._vizinho_ativo = idx
-        viz = self.no.vizinhos[idx]
-
-        # Reseta badge de não-lidas e força redesenho ao trocar conversa
-        self._contadores[viz.ip] = 0
-        self._badge_labels[viz.nome].place_forget()
-        self._last_rendered_count = -1
-
-        # Atualiza visual da sidebar
-        for i, btn in enumerate(self._sidebar_btns):
-            cor_bg   = C["bg_input"] if i == idx else C["bg_sidebar"]
-            cor_ind  = C["accent"]   if i == idx else C["bg_sidebar"]
-            btn.configure(bg=cor_bg)
-            btn._indicator.configure(bg=cor_ind)
-            btn._inner.configure(bg=cor_bg)
-            for w in btn._inner.winfo_children():
-                w.configure(bg=cor_bg)
-
-        # Atualiza cabeçalho da conversa
-        self._conv_title.configure(text=f"  ◈ {viz.nome}")
-        self._conv_sub.configure(text=f"  {viz.ip} : {viz.porta}")
-
-        # Redesenha mensagens
-        self._redesenhar_mensagens()
-        self._status_var.set(f"Conversa ativa: {viz.nome}")
-
-        # Marca mensagens desse vizinho como lidas
-        self.no.marcar_como_lido(viz.ip)
-
-    # ── RENDERIZAÇÃO DE MENSAGENS ─────────────────────────────────────────────
-
-    def _redesenhar_mensagens(self):
-        """
-        Limpa o frame de mensagens e renderiza todo o histórico do vizinho ativo.
-
-        destroy() em todos os filhos limpa os widgets antigos.
-        _criar_balao() cria um balão estilizado para cada mensagem.
-        after(50, scroll_bottom) aguarda os widgets renderizarem antes de rolar.
-        """
-        for w in self._msg_frame.winfo_children():
-            w.destroy()
-
-        viz   = self.no.vizinhos[self._vizinho_ativo]
-        hist  = self.no.get_historico(viz.ip)
-
-        self._last_rendered_count = len(hist)
-
-        if not hist:
-            tk.Label(
-                self._msg_frame,
-                text=f"\n\n\n  Nenhuma mensagem ainda.\n  Diga olá para {viz.nome}! 👋",
-                font=("Consolas", 11),
-                fg=C["text_faint"], bg=C["bg_panel"],
-                justify="center"
-            ).pack(expand=True, fill="both", pady=40)
+        self.no = no
+        self.vizinhos = {v.nome: v for v in no.vizinhos}
+        conversa_inicial = no.vizinhos[0].nome if no.vizinhos else ""
+        self.estado = EstadoCLI(conversa_ativa=conversa_inicial, nao_lidas={})
+        self._print_lock = threading.Lock()
+
+        for nome in self.no.listar_conversas():
+            self.estado.nao_lidas[nome] = 0
+
+        self.no._callback_nova_msg = self._on_nova_msg
+
+    def _safe_print(self, texto: str = ""):
+        with self._print_lock:
+            print(texto)
+
+    def _on_nova_msg(self, conversa: str):
+        if conversa not in self.estado.nao_lidas:
+            self.estado.nao_lidas[conversa] = 0
+
+        if conversa == self.estado.conversa_ativa:
+            self._safe_print(f"\n📨 Nova mensagem em [{conversa}]")
+            self._mostrar_historico(conversa, limite=1)
         else:
-            for item in hist:
-                self._criar_balao(item["tipo"], item["msg"])
+            self.estado.nao_lidas[conversa] += 1
+            n = self.estado.nao_lidas[conversa]
+            self._safe_print(f"\n🔔 {n} nova(s) em [{conversa}]")
 
-        self.after(60, self._scroll_bottom)
+    def _formatar_item(self, item: dict) -> str:
+        tipo = item["tipo"]
+        msg: Mensagem = item["msg"]
 
-    def _criar_balao(self, tipo: str, msg: Mensagem):
-        """
-        Cria um balão de mensagem estilizado dentro do msg_frame.
-
-        tipo:
-          "eu"       → balão à direita, cor verde
-          "deles"    → balão à esquerda, cor azul-acinzentado
-          "fwd"      → balão à esquerda, cor âmbar (encaminhamento recebido)
-          "fwd_sent" → balão à direita, cor violeta (encaminhamento enviado)
-
-        Estrutura do balão:
-          row_frame (alinhamento esquerda/direita)
-            └ bubble_frame (fundo + borda)
-                ├ label_de (remetente / "via")
-                ├ label_conteudo (texto da mensagem)
-                └ label_hora (timestamp à direita)
-        """
-        eh_meu = tipo in ("eu", "fwd_sent")
-
-        # Cores por tipo
-        cores = {
-            "eu":       (C["bg_bubble_me"],    C["accent3"],  C["text_pri"]),
-            "deles":    (C["bg_bubble_other"], C["accent"],   C["text_pri"]),
-            "fwd":      (C["bg_bubble_fwd"],   C["accent4"],  C["text_pri"]),
-            "fwd_sent": (C["bg_bubble_me"],    C["accent2"],  C["text_pri"]),
-        }
-        bg_bubble, cor_nome, cor_txt = cores.get(tipo, cores["deles"])
-
-        # Frame da linha (alinha balão à esquerda ou direita)
-        row = tk.Frame(self._msg_frame, bg=C["bg_panel"])
-        row.pack(fill="x", padx=8, pady=3)
-
-        # Espaçador oposto ao lado do balão
-        if eh_meu:
-            tk.Frame(row, bg=C["bg_panel"]).pack(side="left", expand=True, fill="x")
-
-        # Balão
-        bubble = tk.Frame(row, bg=bg_bubble)
-        bubble.pack(side="right" if eh_meu else "left",
-                    anchor="e" if eh_meu else "w",
-                    padx=4)
-
-        # Borda colorida lateral
-        borda = tk.Frame(bubble, bg=cor_nome, width=3)
-        borda.pack(side="left", fill="y")
-
-        inner = tk.Frame(bubble, bg=bg_bubble)
-        inner.pack(side="left", fill="both", expand=True, padx=8, pady=6)
-
-        # Linha do remetente
+        if tipo == "eu":
+            return f"[{msg.hora()}] Você: {msg.conteudo}"
+        if tipo == "fwd_sent":
+            return f"[{msg.hora()}] Você (encaminhou): {msg.conteudo}"
         if tipo == "fwd":
-            nome_txt = f"↩ {msg.remetente_nome}  via {msg.encaminhado_por}"
-        elif tipo == "fwd_sent":
-            nome_txt = f"↩ {msg.remetente_nome}"
-        elif tipo == "eu":
-            nome_txt = "Você"
-        else:
-            nome_txt = msg.remetente_nome
-
-        tk.Label(
-            inner, text=nome_txt,
-            font=("Consolas", 9, "bold"),
-            fg=cor_nome, bg=bg_bubble, anchor="w"
-        ).pack(fill="x")
-
-        # Conteúdo da mensagem (wraplength=380 px)
-        tk.Label(
-            inner, text=msg.conteudo,
-            font=FONT_MONO2,
-            fg=cor_txt, bg=bg_bubble,
-            wraplength=380, justify="left", anchor="w"
-        ).pack(fill="x", pady=(2, 0))
-
-        # Hora + status (canto inferior direito do balão)
-        hora_frame = tk.Frame(inner, bg=bg_bubble)
-        hora_frame.pack(fill="x")
-
-        hora_txt = msg.hora()
-        if eh_meu and msg.msg_id:
-            status = self.no.get_status(msg.msg_id)
-            if status == "lido":
-                hora_txt += "  ✓✓"
-                cor_status = C["accent"]      # azul = lido
-            elif status == "recebido":
-                hora_txt += "  ✓✓"
-                cor_status = C["text_faint"]  # cinza = recebido
-            else:
-                hora_txt += "  ✓"
-                cor_status = C["text_faint"]  # cinza = enviado
-        else:
-            cor_status = C["text_faint"]
-
-        tk.Label(
-            hora_frame, text=hora_txt,
-            font=FONT_NANO,
-            fg=cor_status, bg=bg_bubble, anchor="e"
-        ).pack(side="right")
-
-        if not eh_meu:
-            tk.Frame(row, bg=C["bg_panel"]).pack(side="right", expand=True, fill="x")
-
-    # ── CANVAS SCROLL ─────────────────────────────────────────────────────────
-
-    def _on_canvas_resize(self, event):
-        """Ajusta a largura do frame interno ao canvas quando a janela é redimensionada."""
-        self._canvas.itemconfig(self._canvas_win, width=event.width)
-
-    def _on_msgframe_resize(self, event):
-        """Atualiza a região de scroll quando o conteúdo muda de tamanho."""
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
-
-    def _on_mousewheel(self, event):
-        """
-        Scroll com a roda do mouse.
-
-        Windows → event.delta (múltiplos de 120)
-        Linux   → Button-4 (cima) e Button-5 (baixo)
-        macOS   → event.delta (diferente de Windows, mas mesmo código funciona)
-        """
-        if event.num == 4:
-            self._canvas.yview_scroll(-1, "units")
-        elif event.num == 5:
-            self._canvas.yview_scroll(1, "units")
-        else:
-            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    def _scroll_bottom(self):
-        """Rola o canvas até o final (mensagem mais recente)."""
-        self._canvas.update_idletasks()
-        self._canvas.yview_moveto(1.0)
-
-    # ── ENVIO ─────────────────────────────────────────────────────────────────
-
-    def _ao_enviar(self, event=None):
-        """
-        Lê o texto do campo, envia via UDP e limpa o campo.
-
-        strip() remove espaços desnecessários.
-        Ignora clique em Enviar se o campo estiver vazio.
-        """
-        texto = self._entry.get().strip()
-        if not texto:
-            return
-
-        viz = self.no.vizinhos[self._vizinho_ativo]
-        self.no.enviar(viz, texto)
-        self._entry.delete(0, "end")
-        self._status_var.set(f"✓  Enviado para {viz.nome}")
-
-    # ── ENCAMINHAMENTO ────────────────────────────────────────────────────────
-
-    _modo_encaminhar = False   # usado apenas por _cancelar_encaminhar / Escape
-
-    def _tecla_f(self, event=None):
-        """Ativa o modo encaminhamento se o campo estiver vazio."""
-        if not self._entry.get():
-            self._iniciar_encaminhar()
-
-    def _iniciar_encaminhar(self):
-        """
-        Abre o diálogo de encaminhamento.
-
-        Busca mensagens recebidas do vizinho ativo e exibe
-        uma janela Toplevel para o usuário escolher qual encaminhar
-        e para qual vizinho enviar.
-        """
-        viz  = self.no.vizinhos[self._vizinho_ativo]
-        msgs = self.no.get_brutas(viz.ip)
-
-        if not msgs:
-            self._status_var.set(f"⚠  Nenhuma mensagem recebida de {viz.nome}.")
-            return
-        if len(self.no.vizinhos) < 2:
-            self._status_var.set("⚠  Encaminhamento requer ao menos 2 vizinhos.")
-            return
-
-        self._abrir_dialogo_encaminhar(msgs)
-
-    def _abrir_dialogo_encaminhar(self, msgs: List[Mensagem]):
-        """
-        Janela Toplevel para selecionar mensagem e destino.
-
-        Toplevel: janela filha independente, mas associada à janela principal.
-        grab_set(): captura todos os eventos do mouse/teclado → modal.
-        """
-        dlg = tk.Toplevel(self)
-        dlg.title("Encaminhar Mensagem")
-        dlg.configure(bg=C["bg_deep"])
-        dlg.geometry("520x460")
-        dlg.resizable(False, False)
-        dlg.grab_set()   # torna modal
-
-        # Cabeçalho do diálogo
-        tk.Label(
-            dlg,
-            text="↩  ENCAMINHAR MENSAGEM",
-            font=("Consolas", 12, "bold"),
-            fg=C["accent2"], bg=C["bg_deep"]
-        ).pack(anchor="w", padx=18, pady=(18, 4))
-
-        tk.Label(
-            dlg,
-            text="Selecione a mensagem que deseja encaminhar:",
-            font=FONT_SMALL,
-            fg=C["text_sec"], bg=C["bg_deep"]
-        ).pack(anchor="w", padx=18, pady=(0, 8))
-
-        tk.Frame(dlg, bg=C["border"], height=1).pack(fill="x", padx=18)
-
-        # Lista de mensagens (Listbox estilizado)
-        list_frame = tk.Frame(dlg, bg=C["bg_panel"])
-        list_frame.pack(fill="both", expand=True, padx=18, pady=10)
-
-        listbox = tk.Listbox(
-            list_frame,
-            font=("Consolas", 10),
-            fg=C["text_pri"],
-            bg=C["bg_panel"],
-            selectbackground=C["accent2"],
-            selectforeground=C["text_pri"],
-            activestyle="none",
-            relief="flat", bd=0,
-            highlightthickness=0
-        )
-        listbox.pack(side="left", fill="both", expand=True)
-
-        scroll = tk.Scrollbar(list_frame, command=listbox.yview,
-                               bg=C["bg_panel"])
-        scroll.pack(side="right", fill="y")
-        listbox.configure(yscrollcommand=scroll.set)
-
-        for i, m in enumerate(msgs):
-            label = f"  [{i}]  {m.remetente_nome}  ·  {m.hora()}  →  {m.conteudo[:42]}"
-            listbox.insert("end", label)
-
-        # Seleção de destino
-        tk.Label(
-            dlg,
-            text="Encaminhar para:",
-            font=FONT_SMALL,
-            fg=C["text_sec"], bg=C["bg_deep"]
-        ).pack(anchor="w", padx=18, pady=(4, 2))
-
-        destinos = [
-            v for i, v in enumerate(self.no.vizinhos)
-            if i != self._vizinho_ativo
-        ]
-
-        dest_var = tk.StringVar(value=destinos[0].nome if destinos else "")
-        dest_frame = tk.Frame(dlg, bg=C["bg_deep"])
-        dest_frame.pack(anchor="w", padx=18, pady=(0, 10))
-
-        for v in destinos:
-            tk.Radiobutton(
-                dest_frame,
-                text=f"  {v.nome}  ({v.ip}:{v.porta})",
-                variable=dest_var,
-                value=v.nome,
-                font=FONT_MONO,
-                fg=C["text_pri"],
-                bg=C["bg_deep"],
-                selectcolor=C["bg_deep"],
-                activebackground=C["bg_deep"],
-                activeforeground=C["accent2"],
-            ).pack(side="left", padx=8)
-
-        # Botões Confirmar / Cancelar
-        btn_row = tk.Frame(dlg, bg=C["bg_deep"])
-        btn_row.pack(fill="x", padx=18, pady=(0, 14))
-
-        def confirmar():
-            sel = listbox.curselection()
-            if not sel:
-                self._status_var.set("⚠  Selecione uma mensagem na lista.")
-                return   # mantém o diálogo aberto para o usuário selecionar
-            msg_idx = sel[0]
-            destino_nome = dest_var.get()
-            destino = next((v for v in self.no.vizinhos if v.nome == destino_nome), None)
-            if not destino:
-                dlg.destroy()
-                return
-            self.no.encaminhar(msgs[msg_idx], destino)
-            self._status_var.set(
-                f"✓  Encaminhado para {destino.nome}: \"{msgs[msg_idx].conteudo[:30]}\""
+            return (
+                f"[{msg.hora()}] Encaminhado por {msg.encaminhado_por}: "
+                f"[{msg.remetente_nome}] {msg.conteudo}"
             )
-            dlg.destroy()
-            self._redesenhar_mensagens()
+        return f"[{msg.hora()}] {msg.remetente_nome}: {msg.conteudo}"
 
-        self._make_button(
-            btn_row, "CONFIRMAR  ▶", C["accent2"], C["text_pri"], confirmar
-        ).pack(side="left", padx=(0, 8))
+    def _mostrar_historico(self, conversa: str, limite: Optional[int] = None):
+        hist = self.no.get_historico(conversa)
+        if not hist:
+            self._safe_print("(sem mensagens)")
+            return
 
-        self._make_button(
-            btn_row, "CANCELAR", C["border"], C["text_sec"],
-            dlg.destroy
-        ).pack(side="left")
+        itens = hist[-limite:] if limite else hist
+        for i, item in enumerate(itens):
+            self._safe_print(f"{i:03d} {self._formatar_item(item)}")
 
-    def _cancelar_encaminhar(self, event=None):
-        self._modo_encaminhar = False
-        self._status_var.set("Encaminhamento cancelado.")
+    def _listar_conversas(self):
+        self._safe_print("\n=== Conversas ===")
+        for nome in self.no.listar_conversas():
+            marcador = "*" if nome == self.estado.conversa_ativa else " "
+            badge = self.estado.nao_lidas.get(nome, 0)
+            extra = f" ({badge} nova(s))" if badge else ""
+            self._safe_print(f"{marcador} {nome}{extra}")
 
-    # ── CALLBACKS DE ATUALIZAÇÃO ──────────────────────────────────────────────
+    def _ajuda(self):
+        self._safe_print(
+            """
+Comandos:
+  /ajuda                         Mostra esta ajuda
+  /conversas                     Lista conversas
+  /abrir <nome>                  Abre conversa
+  /historico                     Mostra histórico da conversa ativa
+  /enviar <texto>                Envia para o vizinho da conversa ativa
+  /encaminhar <idx> <destino>    Encaminha mensagem recebida para outro nó
+  /sair                          Encerra
 
-    def _on_nova_msg_thread_safe(self, chave: str):
-        """
-        Chamado pela thread de escuta quando chega mensagem nova.
+Dica: se digitar texto sem comando, equivale a /enviar <texto>.
+""".strip()
+        )
 
-        NÃO modifica widgets diretamente aqui — a thread de escuta
-        não pode tocar em widgets Tk (não é thread-safe).
-        after(0, ...) enfileira a atualização na thread principal da GUI.
-        """
-        self.after(0, lambda: self._processar_nova_msg(chave))
+    def _abrir_conversa(self, nome: str):
+        conversas = self.no.listar_conversas()
+        if nome not in conversas:
+            self._safe_print(f"Conversa '{nome}' não existe.")
+            return
+        self.estado.conversa_ativa = nome
+        self.estado.nao_lidas[nome] = 0
+        self._safe_print(f"\n✅ Conversa ativa: [{nome}]")
+        self._mostrar_historico(nome, limite=10)
 
-    def _processar_nova_msg(self, chave: str):
-        """
-        Roda na thread principal da GUI (seguro para atualizar widgets).
+    def _enviar(self, texto: str):
+        if not texto.strip():
+            return
+        destino = self.vizinhos.get(self.estado.conversa_ativa)
+        if not destino:
+            self._safe_print("Só é possível enviar para vizinhos diretos.")
+            return
+        self.no.enviar(destino, texto)
 
-        Se a mensagem é da conversa ativa → redesenha imediatamente.
-        Se não → incrementa o badge de não-lidas do vizinho.
-        """
-        self._pkt_count += 1
-        self._pkt_var.set(f"PKT RX: {self._pkt_count}")
+    def _encaminhar(self, idx_str: str, destino_nome: str):
+        conversa = self.estado.conversa_ativa
+        hist = self.no.get_historico(conversa)
+        if not hist:
+            self._safe_print("Sem mensagens nessa conversa.")
+            return
 
-        viz_ativo_ip = self.no.vizinhos[self._vizinho_ativo].ip
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            self._safe_print("Índice inválido.")
+            return
 
-        if chave == viz_ativo_ip:
-            self._redesenhar_mensagens()
-        else:
-            if chave in self._contadores:
-                self._contadores[chave] += 1
-                n = self._contadores[chave]
-                idx = next(
-                    (i for i, v in enumerate(self.no.vizinhos) if v.ip == chave),
-                    None
-                )
-                if idx is not None:
-                    badge = self._badge_labels[chave]
-                    badge.configure(text=f" {n} ")
-                    badge.place(
-                        in_=self._sidebar_btns[idx],
-                        relx=1.0, rely=0.0,
-                        anchor="ne", x=-4, y=4
-                    )
+        if idx < 0 or idx >= len(hist):
+            self._safe_print("Índice fora do intervalo.")
+            return
 
-    def _tick(self):
-        """
-        Polling periódico (a cada 200ms) para redesenhar a conversa ativa.
-        Só redesenha se o número de mensagens mudou desde o último render,
-        evitando o flickering causado por destruição/recriação constante de widgets.
-        """
-        viz = self.no.vizinhos[self._vizinho_ativo]
-        hist = self.no.get_historico(viz.ip)
-        if len(hist) != self._last_rendered_count:
-            self._redesenhar_mensagens()
-        self.after(200, self._tick)
+        item = hist[idx]
+        if item["tipo"] not in ("deles", "fwd"):
+            self._safe_print("Você só pode encaminhar mensagens recebidas.")
+            return
 
-    # ── ENCERRAMENTO ──────────────────────────────────────────────────────────
+        destino = self.vizinhos.get(destino_nome)
+        if not destino:
+            self._safe_print(f"Destino '{destino_nome}' não é vizinho direto.")
+            return
 
-    def _ao_fechar(self):
-        """
-        Encerra o socket UDP antes de fechar a janela Tk.
-        Sem isso, a thread de escuta ficaria suspensa em recvfrom().
-        """
+        self.no.encaminhar(item["msg"], destino)
+        self._safe_print(f"✅ Encaminhado para {destino.nome}")
+
+    def executar(self):
+        self._safe_print("\n◈ CHAT P2P UDP (CLI)")
+        self._safe_print(f"Nó: {self.no.nome}  ({self.no.ip}:{self.no.porta})")
+        self._safe_print("Digite /ajuda para ver comandos.\n")
+        self._listar_conversas()
+
+        while True:
+            try:
+                linha = input(f"\n[{self.estado.conversa_ativa}]> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self._safe_print("\nSaindo...")
+                break
+
+            if not linha:
+                continue
+
+            if not linha.startswith("/"):
+                self._enviar(linha)
+                continue
+
+            partes = linha.split(maxsplit=2)
+            cmd = partes[0].lower()
+
+            if cmd == "/sair":
+                break
+            if cmd == "/ajuda":
+                self._ajuda()
+            elif cmd == "/conversas":
+                self._listar_conversas()
+            elif cmd == "/historico":
+                self._mostrar_historico(self.estado.conversa_ativa)
+            elif cmd == "/abrir" and len(partes) >= 2:
+                self._abrir_conversa(partes[1])
+            elif cmd == "/enviar" and len(partes) >= 2:
+                texto = linha.split(maxsplit=1)[1]
+                self._enviar(texto)
+            elif cmd == "/encaminhar" and len(partes) >= 3:
+                sub = partes[2].split(maxsplit=1)
+                if len(sub) < 2:
+                    self._safe_print("Uso: /encaminhar <idx> <destino>")
+                else:
+                    self._encaminhar(sub[0], sub[1])
+            else:
+                self._safe_print("Comando inválido. Use /ajuda.")
+
         self.no.encerrar()
-        self.destroy()
 
-
-# =============================================================================
-# SEÇÃO 5 — TELA DE CONFIGURAÇÃO (GUI)
-# =============================================================================
-
-class TelaSetup(tk.Tk):
-    """
-    Tela inicial de configuração exibida quando o programa é executado
-    sem argumentos de linha de comando.
-
-    Permite configurar nome/IP/porta do nó local e adicionar vizinhos
-    antes de abrir o chat.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.resultado = None  # (nome, ip, [Vizinho, ...])
-        self._vizinhos_frames = []
-
-        self._configurar_janela()
-        self._construir_ui()
-
-        self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
-
-    def _configurar_janela(self):
-        self.title("◈ P2P UDP Chat  ·  Configuração")
-        self.geometry("620x560")
-        self.minsize(520, 480)
-        self.resizable(False, False)
-        self.configure(bg=C["bg_deep"])
-
-    def _construir_ui(self):
-        # ── Header ────────────────────────────────────────────────────────
-        hf = tk.Frame(self, bg=C["bg_header"], height=56)
-        hf.pack(fill="x")
-        hf.pack_propagate(False)
-        tk.Frame(hf, bg=C["accent"], height=1).pack(side="bottom", fill="x")
-        tk.Label(
-            hf, text="◈ P2P UDP CHAT  ·  SETUP",
-            font=("Consolas", 15, "bold"),
-            fg=C["accent"], bg=C["bg_header"]
-        ).pack(side="left", padx=18, pady=14)
-
-        # ── Container scrollável ──────────────────────────────────────────
-        container = tk.Frame(self, bg=C["bg_deep"])
-        container.pack(fill="both", expand=True, padx=24, pady=12)
-
-        # ── Seção: Meu Computador ─────────────────────────────────────────
-        tk.Label(
-            container, text="▸ MEU COMPUTADOR",
-            font=FONT_BOLD, fg=C["accent3"], bg=C["bg_deep"]
-        ).pack(anchor="w", pady=(8, 2))
-        tk.Label(
-            container,
-            text="Configure os dados deste computador. O outro PC também "
-                 "precisa rodar o programa com as configurações dele.",
-            font=FONT_NANO, fg=C["text_sec"], bg=C["bg_deep"],
-            wraplength=560, justify="left"
-        ).pack(anchor="w", pady=(0, 6))
-
-        me_frame = tk.Frame(container, bg=C["bg_panel"],
-                            highlightbackground=C["border"], highlightthickness=1)
-        me_frame.pack(fill="x", pady=(0, 10))
-
-        row_me = tk.Frame(me_frame, bg=C["bg_panel"])
-        row_me.pack(fill="x", padx=12, pady=10)
-
-        # Nome
-        tk.Label(row_me, text="Nome:", font=FONT_MONO,
-                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=0, column=0, sticky="w", pady=3)
-        self._e_nome = tk.Entry(row_me, font=FONT_MONO, width=18,
-                                bg=C["bg_input"], fg=C["text_pri"],
-                                insertbackground=C["accent"],
-                                relief="flat", highlightthickness=1,
-                                highlightbackground=C["border"],
-                                highlightcolor=C["accent"])
-        self._e_nome.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
-        self._e_nome.insert(0, "Meu_PC")
-
-        # IP
-        tk.Label(row_me, text="IP:", font=FONT_MONO,
-                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=1, column=0, sticky="w", pady=3)
-        self._e_ip = tk.Entry(row_me, font=FONT_MONO, width=18,
-                              bg=C["bg_input"], fg=C["text_pri"],
-                              insertbackground=C["accent"],
-                              relief="flat", highlightthickness=1,
-                              highlightbackground=C["border"],
-                              highlightcolor=C["accent"])
-        self._e_ip.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
-        self._e_ip.insert(0, "127.0.0.1")
-        tk.Label(
-            row_me,
-            text="Dica: descubra seu IP com  ipconfig  (Windows) ou  ifconfig / ip a  (Linux/Mac)",
-            font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
-        ).grid(row=1, column=2, sticky="w", padx=(10, 0), pady=3)
-
-        # Porta padronizada
-        tk.Label(row_me, text="Porta:", font=FONT_MONO,
-                 fg=C["text_sec"], bg=C["bg_panel"]).grid(row=2, column=0, sticky="w", pady=3)
-        tk.Label(
-            row_me,
-            text=f"{CHAT_PORT}  (porta fixa do chat)",
-            font=FONT_MONO,
-            fg=C["accent"], bg=C["bg_panel"]
-        ).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
-        tk.Label(
-            row_me,
-            text="Todos os computadores usam a mesma porta; basta informar os IPs corretos.",
-            font=FONT_NANO, fg=C["accent4"], bg=C["bg_panel"]
-        ).grid(row=2, column=2, sticky="w", padx=(10, 0), pady=3)
-
-        # ── Seção: Vizinhos ───────────────────────────────────────────────
-        viz_header = tk.Frame(container, bg=C["bg_deep"])
-        viz_header.pack(fill="x", pady=(8, 6))
-        tk.Label(
-            viz_header, text="▸ VIZINHOS",
-            font=FONT_BOLD, fg=C["accent"], bg=C["bg_deep"]
-        ).pack(side="left")
-
-        tk.Label(
-            container,
-            text="Informe o nome, IP e porta de cada PC com quem deseja conversar.",
-            font=FONT_NANO, fg=C["text_sec"], bg=C["bg_deep"],
-            wraplength=560, justify="left"
-        ).pack(anchor="w", pady=(0, 4))
-
-        btn_add = tk.Label(
-            viz_header, text="  [+ ADICIONAR]  ",
-            font=FONT_SMALL, fg=C["accent3"], bg=C["bg_deep"],
-            cursor="hand2"
-        )
-        btn_add.pack(side="right")
-        btn_add.bind("<Button-1>", lambda e: self._adicionar_vizinho())
-
-        self._viz_container = tk.Frame(container, bg=C["bg_deep"])
-        self._viz_container.pack(fill="both", expand=True)
-
-        # Adiciona 1 vizinho por padrão
-        self._adicionar_vizinho()
-
-        # ── Botão Confirmar ───────────────────────────────────────────────
-        btn_frame = tk.Frame(self, bg=C["bg_deep"])
-        btn_frame.pack(fill="x", padx=24, pady=(4, 16))
-
-        self._btn_confirmar = tk.Label(
-            btn_frame,
-            text="  ▶  INICIAR CHAT  ",
-            font=FONT_BOLD, fg=C["bg_deep"], bg=C["accent"],
-            cursor="hand2", padx=20, pady=10
-        )
-        self._btn_confirmar.pack()
-        self._btn_confirmar.bind("<Button-1>", lambda e: self._confirmar())
-        self._btn_confirmar.bind("<Enter>",
-            lambda e: self._btn_confirmar.configure(bg=C["accent3"]))
-        self._btn_confirmar.bind("<Leave>",
-            lambda e: self._btn_confirmar.configure(bg=C["accent"]))
-
-        # ── Status ────────────────────────────────────────────────────────
-        self._lbl_status = tk.Label(
-            self, text="", font=FONT_SMALL,
-            fg=C["danger"], bg=C["bg_deep"]
-        )
-        self._lbl_status.pack(pady=(0, 8))
-
-    def _adicionar_vizinho(self):
-        """Adiciona uma linha de campos para um novo vizinho."""
-        idx = len(self._vizinhos_frames)
-
-        frame = tk.Frame(self._viz_container, bg=C["bg_panel"],
-                         highlightbackground=C["border"], highlightthickness=1)
-        frame.pack(fill="x", pady=3)
-
-        row = tk.Frame(frame, bg=C["bg_panel"])
-        row.pack(fill="x", padx=10, pady=6)
-
-        # Nome
-        tk.Label(row, text="Nome:", font=FONT_SMALL,
-                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
-        e_nome = tk.Entry(row, font=FONT_MONO, width=14,
-                          bg=C["bg_input"], fg=C["text_pri"],
-                          insertbackground=C["accent"],
-                          relief="flat", highlightthickness=1,
-                          highlightbackground=C["border"],
-                          highlightcolor=C["accent"])
-        e_nome.pack(side="left", padx=(4, 10))
-        e_nome.insert(0, f"Vizinho_{idx + 1}")
-
-        # IP
-        tk.Label(row, text="IP:", font=FONT_SMALL,
-                 fg=C["text_sec"], bg=C["bg_panel"]).pack(side="left")
-        e_ip = tk.Entry(row, font=FONT_MONO, width=14,
-                        bg=C["bg_input"], fg=C["text_pri"],
-                        insertbackground=C["accent"],
-                        relief="flat", highlightthickness=1,
-                        highlightbackground=C["border"],
-                        highlightcolor=C["accent"])
-        e_ip.pack(side="left", padx=(4, 10))
-        e_ip.insert(0, "127.0.0.1")
-
-        tk.Label(row, text=f"Porta fixa: {CHAT_PORT}", font=FONT_SMALL,
-             fg=C["accent"], bg=C["bg_panel"]).pack(side="left", padx=(4, 8))
-
-        # Botão remover
-        btn_rm = tk.Label(row, text=" ✕ ", font=FONT_SMALL,
-                          fg=C["danger"], bg=C["bg_panel"], cursor="hand2")
-        btn_rm.pack(side="right")
-        btn_rm.bind("<Button-1>",
-                    lambda e, f=frame, d=(frame, e_nome, e_ip):
-                    self._remover_vizinho(d))
-
-        self._vizinhos_frames.append((frame, e_nome, e_ip))
-
-    def _remover_vizinho(self, entry_tuple):
-        """Remove uma linha de vizinho."""
-        if len(self._vizinhos_frames) <= 1:
-            self._lbl_status.config(text="É necessário ao menos 1 vizinho.")
-            return
-        frame, _, _, _ = entry_tuple
-        frame.destroy()
-        self._vizinhos_frames.remove(entry_tuple)
-
-    def _confirmar(self):
-        """Valida os campos e armazena o resultado."""
-        self._lbl_status.config(text="")
-
-        nome = self._e_nome.get().strip()
-        ip = self._e_ip.get().strip()
-
-        if not nome:
-            self._lbl_status.config(text="Preencha o nome do seu computador.")
-            return
-        if not ip:
-            self._lbl_status.config(text="Preencha o IP do seu computador.")
-            return
-        vizinhos = []
-        for _, e_nome, e_ip in self._vizinhos_frames:
-            vn = e_nome.get().strip()
-            vi = e_ip.get().strip()
-            if not vn or not vi:
-                self._lbl_status.config(text="Preencha todos os campos dos vizinhos.")
-                return
-            vizinhos.append(Vizinho(nome=vn, ip=vi))
-
-        self.resultado = (nome, ip, vizinhos)
-        self.destroy()
-
-    def _ao_fechar(self):
-        self.resultado = None
-        self.destroy()
-
-
-# =============================================================================
-# PARSE DE ARGUMENTOS
-# =============================================================================
 
 def parsear_argumentos():
-    """
-    Lê e valida argumentos da linha de comando.
-
-    Formato:
-      python3 chat_gui.py <nome> <ip>
-                          <viz1_nome> <viz1_ip>
-                         [<viz2_nome> <viz2_ip>]
-
-    range(2, len(args), 2) itera em passos de 2 a partir do índice 2,
-    lendo cada par (nome, ip) de vizinho.
-    """
     args = sys.argv[1:]
-    if len(args) < 4:
-        print(__doc__)
-        print("ERRO: Argumentos insuficientes.")
+    if len(args) < 6 or len(args) % 3 != 0:
+        print(
+            "Uso:\n"
+            "  python3 chat_gui.py <nome> <ip> <porta> "
+            "<viz1_nome> <viz1_ip> <viz1_porta> "
+            "[<viz2_nome> <viz2_ip> <viz2_porta> ...]"
+        )
         sys.exit(1)
 
-    nome = args[0]
-    ip   = args[1]
-
-    vizinhos = []
-    for i in range(2, len(args), 2):
-        if i + 1 < len(args):
-            vizinhos.append(Vizinho(
-                nome=args[i],
-                ip=args[i + 1],
-            ))
-
-    if not vizinhos:
-        print("ERRO: Informe ao menos 1 vizinho.")
+    nome, ip, porta_str = args[0], args[1], args[2]
+    try:
+        porta = int(porta_str)
+    except ValueError:
+        print(f"Porta inválida: {porta_str}")
         sys.exit(1)
 
-    return nome, ip, vizinhos
+    vizinhos: List[Vizinho] = []
+    for i in range(3, len(args), 3):
+        v_nome, v_ip, v_porta_str = args[i], args[i + 1], args[i + 2]
+        try:
+            v_porta = int(v_porta_str)
+        except ValueError:
+            print(f"Porta inválida para {v_nome}: {v_porta_str}")
+            sys.exit(1)
+        vizinhos.append(Vizinho(v_nome, v_ip, v_porta))
 
+    return nome, ip, porta, vizinhos
 
-# =============================================================================
-# PONTO DE ENTRADA
-# =============================================================================
 
 if __name__ == "__main__":
-    # Se há argumentos de linha de comando, usa o modo CLI (comportamento original)
-    if len(sys.argv) > 1:
-        nome, ip, vizinhos = parsear_argumentos()
-    else:
-        # Sem argumentos → abre a tela de configuração gráfica
-        setup = TelaSetup()
-        setup.mainloop()
-        if setup.resultado is None:
-            sys.exit(0)
-        nome, ip, vizinhos = setup.resultado
-
-    # Inicia o nó UDP (socket + thread de escuta)
-    no = No(nome, ip, vizinhos)
-
-    # Inicia a interface gráfica (bloqueia até fechar a janela)
-    app = ChatApp(no)
-    app.mainloop()
-
-    # Garante encerramento do socket ao sair
-    no.encerrar()
+    nome, ip, porta, vizinhos = parsear_argumentos()
+    no = No(nome, ip, porta, vizinhos)
+    ChatCLI(no).executar()
