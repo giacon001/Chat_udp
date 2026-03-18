@@ -176,12 +176,8 @@ Dica: se digitar texto sem comando, equivale a /enviar <texto>.
             elif cmd == "/enviar" and len(partes) >= 2:
                 texto = linha.split(maxsplit=1)[1]
                 self._enviar(texto)
-            elif cmd == "/encaminhar" and len(partes) >= 3:
-                sub = partes[2].split(maxsplit=1)
-                if len(sub) < 2:
-                    self._safe_print("Uso: /encaminhar <idx> <destino>")
-                else:
-                    self._encaminhar(sub[0], sub[1])
+            elif cmd == "/encaminhar" and len(partes) == 3:
+                self._encaminhar(partes[1], partes[2])
             else:
                 self._safe_print("Comando inválido. Use /ajuda.")
 
