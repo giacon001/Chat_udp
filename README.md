@@ -1,75 +1,93 @@
 # Chat P2P UDP (CLI)
 
-Aplicação de mensageria P2P em **Python + UDP**, sem GUI, feita para ser menor, mais enxuta e fácil de explicar.
+Aplicação de mensageria **P2P via UDP** em Python (somente biblioteca padrão), sem GUI.
 
-## Estrutura
+## Arquitetura atual
 
 ```text
 Chat_udp/
-├── chat_network.py   # Camada de rede UDP
-└── chat_gui.py       # Aplicação CLI (nome mantido por compatibilidade)
+├── chat_network.py   # Camada de rede e histórico
+└── chat_gui.py       # Interface CLI (nome legado do arquivo)
 ```
 
-## Requisitos atendidos do trabalho
+- `chat_network.py`
+  - `Mensagem` e `Vizinho` (dataclasses)
+  - classe `No` com socket UDP, thread de escuta, histórico e encaminhamento
+- `chat_gui.py`
+  - classe `ChatCLI` com comandos de terminal
+  - parser de argumentos e loop principal
 
-- **Protocolo UDP obrigatório**: `socket.SOCK_DGRAM`
-- **Concorrência**: thread de escuta + input da CLI em paralelo
-- **Estrutura da mensagem**:
-  - timestamp
-  - remetente (nome/ip/porta)
-  - destinatário final (nome/ip/porta)
-  - conteúdo
-  - status de encaminhamento (`encaminhado`, `encaminhado_por`)
-- **Conversa separada por vizinho/remetente**
-- **Encaminhamento para terceiro nó**
+## Como funciona hoje
+
+- Transporte: UDP (`socket.SOCK_DGRAM`), sem servidor central.
+- Concorrência: uma thread escuta mensagens enquanto a CLI continua recebendo comandos.
+- Histórico por conversa com tipos:
+  - `eu` (mensagem enviada)
+  - `deles` (mensagem recebida)
+  - `fwd` (mensagem recebida e marcada como encaminhada)
+  - `fwd_sent` (nota local de que você encaminhou algo)
+- **Deduplicação de conversa por IP**:
+  - para IPs já conhecidos, a conversa usa sempre o alias local configurado.
+  - isso evita conversas duplicadas quando o outro nó usa nome diferente do seu contato local.
+
+## Estrutura da mensagem
+
+Cada pacote JSON contém:
+
+- `timestamp`
+- `remetente_nome`, `remetente_ip`, `remetente_porta`
+- `dest_nome`, `dest_ip`, `dest_porta`
+- `conteudo`
+- `encaminhado` (bool)
+- `encaminhado_por` (str opcional)
 
 ## Execução
 
-Formato:
+Uso:
 
 ```bash
 python3 chat_gui.py <nome> <ip> <porta> <viz1_nome> <viz1_ip> <viz1_porta> [<viz2_nome> <viz2_ip> <viz2_porta> ...]
 ```
 
-Exemplo com 3 nós:
+Exemplo (3 nós):
 
 ```bash
 # Terminal 1
-python3 chat_gui.py No_A 192.168.1.10 5001 No_B 192.168.1.11 5002
+python3 chat_gui.py No_A 192.168.1.10 5001 No_B 192.168.1.11 5002 No_C 192.168.1.12 5003
 
 # Terminal 2
 python3 chat_gui.py No_B 192.168.1.11 5002 No_A 192.168.1.10 5001 No_C 192.168.1.12 5003
 
 # Terminal 3
-python3 chat_gui.py No_C 192.168.1.12 5003 No_B 192.168.1.11 5002
+python3 chat_gui.py No_C 192.168.1.12 5003 No_B 192.168.1.11 5002 No_A 192.168.1.10 5001 
 ```
-
-## Comandos da CLI
-
-- `/ajuda`
-- `/conversas`
-- `/abrir <nome>`
-- `/historico`
-- `/enviar <texto>`
-- `/encaminhar <indice> <destino>`
-- `/sair`
-
-Também pode digitar texto direto (sem comando), equivalente a `/enviar <texto>`.
-
-## Como demonstrar o encaminhamento (critério D)
-
-1. Bob envia mensagem para Alice.
-2. Alice abre a conversa com Bob e usa `/historico`.
-3. Alice escolhe o índice da mensagem e executa:
+Local (3 nós):
 
 ```bash
-/encaminhar <indice> Charlie
+# Terminal 1
+python3 chat_gui.py No_A 127.0.0.1 5001 No_B 127.0.0.1 5002 No_C 127.0.0.1 5003
+
+# Terminal 2
+python3 chat_gui.py No_B 127.0.0.1 5002 No_A 127.0.0.1 5001 No_C 127.0.0.1 5003
+
+# Terminal 3
+python3 chat_gui.py No_C 127.0.0.1 5003 No_B 127.0.0.1 5002 No_A 127.0.0.1 5001 
 ```
 
-4. Charlie recebe no formato:
-   - `Encaminhado por Alice: [mensagem original de Bob]`
+## Comandos disponíveis
 
-## Observações
+- `/ajuda` — mostra ajuda
+- `/conversas` — lista conversas e não lidas
+- `/abrir <nome>` — define conversa ativa
+- `/historico` — mostra histórico da conversa ativa
+- `/enviar <texto>` — envia para o vizinho da conversa ativa
+- `/encaminhar <indice> <destino>` — encaminha mensagem recebida para outro vizinho
+- `/sair` — encerra o nó
 
-- Não existe servidor central.
-- Cada instância é um nó independente.
+Atalho: texto sem `/` é tratado como `/enviar <texto>`.
+
+## Limitações atuais
+
+- Envio direto (`/enviar`) só funciona para vizinho direto configurado.
+- `/encaminhar` só aceita mensagens recebidas (`deles` ou `fwd`).
+- UDP não garante entrega, ordem ou confirmação.

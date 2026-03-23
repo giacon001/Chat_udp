@@ -5,7 +5,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -54,8 +54,14 @@ class No:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("0.0.0.0", self.porta))
 
-        # Mapeia IP -> apelido local da conversa (evita duplicação por nomes diferentes)
-        self._alias_por_ip: Dict[str, str] = {v.ip: v.nome for v in vizinhos}
+        # Mapeia endpoint e IP para apelidos locais de conversa.
+        # Prioridade no recebimento: (ip,porta) -> IP único -> nome do pacote.
+        self._alias_por_endpoint: Dict[Tuple[str, int], str] = {
+            (v.ip, v.porta): v.nome for v in vizinhos
+        }
+        self._aliases_por_ip: Dict[str, Set[str]] = {}
+        for v in vizinhos:
+            self._aliases_por_ip.setdefault(v.ip, set()).add(v.nome)
 
         self._historico: Dict[str, deque] = {v.nome: deque(maxlen=300) for v in vizinhos}
         self._brutas: Dict[str, deque] = {v.nome: deque(maxlen=100) for v in vizinhos}
@@ -77,12 +83,24 @@ class No:
             self._historico[conversa] = deque(maxlen=300)
             self._brutas[conversa] = deque(maxlen=100)
 
-    def _conversa_por_origem(self, remetente_ip: str, remetente_nome: str) -> str:
-        # Se IP já é conhecido localmente, sempre usa o apelido local.
-        if remetente_ip in self._alias_por_ip:
-            return self._alias_por_ip[remetente_ip]
-        # Origem desconhecida: usa nome vindo no pacote ou IP como fallback.
-        return remetente_nome or remetente_ip
+    def _conversa_por_origem(
+        self,
+        origem_ip: str,
+        origem_porta: int,
+        nome_sugerido: str,
+    ) -> str:
+        # 1) Mapeamento exato por endpoint (evita colisão quando vários nós usam mesmo IP).
+        endpoint = (origem_ip, origem_porta)
+        if endpoint in self._alias_por_endpoint:
+            return self._alias_por_endpoint[endpoint]
+
+        # 2) Se IP corresponde a um único alias conhecido, pode usar esse alias.
+        aliases = self._aliases_por_ip.get(origem_ip)
+        if aliases and len(aliases) == 1:
+            return next(iter(aliases))
+
+        # 3) Fallback: nome do pacote, senão ip:porta.
+        return nome_sugerido or f"{origem_ip}:{origem_porta}"
 
     def enviar(self, destino: Vizinho, conteudo: str):
         msg = Mensagem(
@@ -101,8 +119,6 @@ class No:
         with self._lock:
             self._garantir_conversa(destino.nome)
             self._historico[destino.nome].append({"tipo": "eu", "msg": msg})
-
-        self._notificar(destino.nome)
 
     def encaminhar(self, msg_original: Mensagem, destino: Vizinho):
         msg = Mensagem(
@@ -127,7 +143,7 @@ class No:
             dest_nome=destino.nome,
             dest_ip=destino.ip,
             dest_porta=destino.porta,
-            conteudo=f'Encaminhei "{msg_original.conteudo[:40]}" para {destino.nome}',
+            conteudo=f'"{msg_original.conteudo[:40]}" para {destino.nome}',
             encaminhado=True,
             encaminhado_por=self.nome,
         )
@@ -136,21 +152,25 @@ class No:
             self._garantir_conversa(destino.nome)
             self._historico[destino.nome].append({"tipo": "fwd_sent", "msg": nota})
 
-        self._notificar(destino.nome)
-
     def _loop_escuta(self):
         while self._rodando:
             try:
-                dados, _ = self._sock.recvfrom(65535)
+                dados, origem = self._sock.recvfrom(65535)
                 msg = Mensagem.desserializar(dados)
-                self._processar(msg)
+                self._processar(msg, origem)
             except OSError:
                 break
             except Exception:
                 continue
 
-    def _processar(self, msg: Mensagem):
-        conversa = self._conversa_por_origem(msg.remetente_ip, msg.remetente_nome)
+    def _processar(self, msg: Mensagem, origem: Tuple[str, int]):
+        origem_ip, origem_porta = origem
+        nome_sugerido = msg.encaminhado_por if msg.encaminhado and msg.encaminhado_por else msg.remetente_nome
+        conversa = self._conversa_por_origem(
+            origem_ip,
+            origem_porta,
+            nome_sugerido,
+        )
         tipo = "fwd" if msg.encaminhado else "deles"
 
         with self._lock:
